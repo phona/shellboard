@@ -1,0 +1,169 @@
+import { useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import type { SessionWithRuntime } from "@shellboard/contracts";
+import { ApiError, api } from "../../api/client";
+import { toast } from "../../state/toasts";
+import { useUi } from "../../state/store";
+import type { TerminalStatus } from "./useTerminalWs";
+import { useTerminalWs } from "./useTerminalWs";
+
+const STATUS_BANNER: Partial<Record<TerminalStatus, string>> = {
+  connecting: "Connecting…",
+  reconnecting: "Reconnecting…",
+  "taken-over": "Taken over by another client",
+};
+
+export function TerminalView({
+  data,
+  variant,
+}: {
+  data: SessionWithRuntime;
+  variant: "agent" | "tool";
+}) {
+  const { session, runtime } = data;
+  const terminal = useTerminalWs(
+    variant === "agent"
+      ? `/api/sessions/${session.id}/terminal`
+      : `/api/sessions/${session.id}/tools/terminal`,
+  );
+  const [fullscreen, setFullscreen] = useState(false);
+  const [searchValue, setSearchValue] = useState("");
+  const queryClient = useQueryClient();
+  const exited = variant === "agent" && runtime.activity === "exited";
+
+  const restart = async () => {
+    try {
+      await api.sessions.restart(session.id);
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      terminal.reconnect();
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : "restart failed", "error");
+    }
+  };
+
+  const banner =
+    variant === "agent" && exited
+      ? "session exited"
+      : STATUS_BANNER[terminal.status];
+
+  return (
+    <div className={fullscreen ? "terminal-view fullscreen" : "terminal-view"}>
+      <div className="terminal-head">
+        <div className="terminal-title">
+          {variant === "agent" ? session.name : `${session.name} · tool shell`}
+          {variant === "agent" && (
+            <span className={`act-dot ${runtime.activity}`} title={runtime.activity} />
+          )}
+          {variant === "tool" && <span className="muted">ephemeral — dies with the tab</span>}
+        </div>
+        <div className="terminal-actions">
+          <button
+            type="button"
+            className="icon-btn"
+            title="Search (Ctrl+F)"
+            onClick={() => terminal.setSearchOpen(!terminal.searchOpen)}
+          >
+            ⌕
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="Smaller font"
+            onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize - 1)}
+          >
+            A−
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="Larger font"
+            onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize + 1)}
+          >
+            A+
+          </button>
+          <button type="button" className="icon-btn" title="Paste" onClick={terminal.paste}>
+            ⎘
+          </button>
+          {variant === "agent" && (
+            <button
+              type="button"
+              className="icon-btn"
+              title="History (tmux copy-mode)"
+              onClick={() => terminal.sendText("\x02[")}
+            >
+              ⇲
+            </button>
+          )}
+          <button
+            type="button"
+            className="icon-btn"
+            title="Fullscreen"
+            onClick={() => setFullscreen((value) => !value)}
+          >
+            ⛶
+          </button>
+        </div>
+      </div>
+
+      {terminal.searchOpen && (
+        <div className="terminal-search">
+          <input
+            autoFocus
+            value={searchValue}
+            placeholder="search in terminal"
+            onChange={(event) => setSearchValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                terminal.findNext();
+              }
+              if (event.key === "Escape") terminal.setSearchOpen(false);
+            }}
+          />
+          <button
+            type="button"
+            className="icon-btn"
+            title="Previous"
+            onClick={() => terminal.findPrevious(searchValue)}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="Next"
+            onClick={() => terminal.findNext(searchValue)}
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="Close"
+            onClick={() => terminal.setSearchOpen(false)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      <div className="terminal-host" ref={terminal.containerRef} />
+
+      {banner && (
+        <div className={`terminal-banner ${exited ? "ended" : terminal.status}`}>
+          <span>{banner}</span>
+          {variant === "agent" && exited && (
+            <button type="button" className="btn primary" onClick={() => void restart()}>
+              Restart
+            </button>
+          )}
+          {terminal.status === "reconnecting" && (
+            <button type="button" onClick={terminal.reconnect}>
+              retry now
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

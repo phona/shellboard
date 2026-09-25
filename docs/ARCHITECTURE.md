@@ -245,8 +245,10 @@ POST   /api/sessions/:id/git/discard          # 破坏性,UI 必须确认
 GET    /api/sessions/:id/files?path=          # 列目录
 GET    /api/sessions/:id/files/content?path=
 PUT    /api/sessions/:id/files/content?path=
+GET    /api/sessions/:id/files/download?path= # 原始字节下载(≤100MB)
 POST   /api/sessions/:id/files                # create/upload
-DELETE /api/sessions/:id/files?path=
+PATCH  /api/sessions/:id/files                # rename
+DELETE /api/sessions/:id/files?path=&recursive=
 
 WS     /api/sessions/:id/tools/terminal       # session.cwd 下 bash,不落 tmux,随浏览器关闭结束
 

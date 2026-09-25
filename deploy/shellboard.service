@@ -1,0 +1,20 @@
+[Unit]
+Description=Shellboard — web cockpit for persistent coding-agent shells
+After=network.target
+
+[Service]
+Type=simple
+# Adjust user and install path (repo checkout with node_modules installed)
+User=YOUR_USER
+WorkingDirectory=/opt/shellboard/apps/server
+Environment=SHELLBOARD_PORT=7700
+Environment=SHELLBOARD_HOST=127.0.0.1
+# Set a token to enable auth (required for any non-loopback access):
+# Environment=SHELLBOARD_TOKEN=change-me
+# Environment=SHELLBOARD_ALLOWED_ORIGINS=https://shellboard.example.com
+ExecStart=/opt/shellboard/apps/server/node_modules/.bin/tsx src/server.ts
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+import { useEffect } from "react";
+import { TokenGate } from "./features/auth/TokenGate";
+import { SessionSidebar } from "./features/sessions/SessionSidebar";
+import { useEvents } from "./events/useEvents";
+import { AppLayout } from "./layout/AppLayout";
+import { useUi } from "./state/store";
+import { ToastStack } from "./components/ToastStack";
+import { isTypingTarget, matchesBinding, KEYBINDINGS } from "./util/dom";
+
+export function App() {
+  useEvents();
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+      if (matchesBinding(event, KEYBINDINGS.toggleLeft)) {
+        event.preventDefault();
+        useUi.getState().toggleLeft();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  return (
+    <>
+      <TokenGate />
+      <AppLayout sidebar={<SessionSidebar />} />
+      <ToastStack />
+    </>
+  );
+}

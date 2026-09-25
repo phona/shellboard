@@ -1,0 +1,5 @@
+{
+  "name": "@shellboard/config",
+  "private": true,
+  "type": "module"
+}

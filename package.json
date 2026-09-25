@@ -1,0 +1,26 @@
+{
+  "name": "shellboard",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty",
+      "better-sqlite3"
+    ]
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present dev",
+    "build": "pnpm --filter @shellboard/web build",
+    "check": "pnpm -r --if-present typecheck && eslint .",
+    "test": "pnpm --filter @shellboard/server test"
+  },
+  "devDependencies": {
+    "eslint": "10.11.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.1"
+  }
+}
