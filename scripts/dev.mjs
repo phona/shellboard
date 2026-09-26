@@ -6,10 +6,36 @@
 // (`pnpm -r dev` cannot forward args cleanly — vite receives a literal `--`
 // and treats --host as a positional.) API host/port stay env-driven:
 // SHELLBOARD_HOST / SHELLBOARD_PORT.
+//
+// Exposing the web dev server on a non-loopback interface auto-enables token
+// auth (Jupyter/code-server style): a token is generated, printed once, and
+// injected into the API server's env.
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 
 const args = process.argv.slice(2);
 if (args[0] === "--") args.shift();
+
+function argValue(name) {
+  const inline = args.find((value) => value.startsWith(`${name}=`));
+  if (inline !== undefined) return inline.slice(name.length + 1);
+  const index = args.indexOf(name);
+  if (index === -1) return undefined;
+  const next = args[index + 1];
+  if (next === undefined || next.startsWith("-")) return "0.0.0.0"; // bare --host
+  return next;
+}
+
+const isLoopback = (host) => host === "localhost" || host === "::1" || host.startsWith("127.");
+
+const webHost = argValue("--host") ?? process.env.SHELLBOARD_WEB_HOST;
+if (webHost !== undefined && !isLoopback(webHost) && !process.env.SHELLBOARD_TOKEN) {
+  const token = randomBytes(24).toString("base64url");
+  process.env.SHELLBOARD_TOKEN = token; // inherited by the API server child
+  console.log(`[shellboard] web is exposed on ${webHost} — token auth is enabled.`);
+  console.log(`[shellboard] access token: ${token}`);
+  console.log(`[shellboard] paste it into the login page; set SHELLBOARD_TOKEN to pin your own.`);
+}
 
 const children = new Set();
 let shuttingDown = false;

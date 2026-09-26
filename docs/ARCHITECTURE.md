@@ -266,7 +266,7 @@ Web Shell + 文件系统写 + Git 写
 ```
 
 - 默认监听 `127.0.0.1`;远程访问推荐 Cloudflare Tunnel 或 Tailscale,不裸暴露公网。
-- 应用层:token 登录 + HttpOnly cookie、WebSocket Origin 校验、CSRF 保护、全路由(含 WS upgrade)鉴权。
+- 应用层:token 登录 + HttpOnly cookie、WebSocket Origin 校验、CSRF 保护、全路由(含 WS upgrade)鉴权。绑定非回环地址且未设置 `SHELLBOARD_TOKEN` 时,启动自动生成随机 token 并打印(Jupyter/code-server 模式),不允许无鉴权暴露。
 - 所有 path 经 `resolve` + 逐段 `realpath` 验证仍位于 session `cwd` 内,拒绝 `../` 与 symlink escape(见 D1)。
 - 所有执行动作走显式 service(SessionService / GitService / FileService),参数经 Zod 校验;Custom session command 仅在用户主动创建时允许,不暴露成通用远程 exec。
 - 日志只记录:session lifecycle、PTY connect/disconnect、tmux errors、git 操作、文件写删、auth 事件。**绝不记录终端输入输出,默认不偷偷做 transcript。**

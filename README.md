@@ -67,14 +67,14 @@ pnpm check            # typecheck(tsc)+ eslint
 | `SHELLBOARD_WEB_PORT` | `5173` | 仅开发态:vite dev server 端口 |
 | `SHELLBOARD_HOME` | `~/.shellboard` | 数据目录(SQLite 在 `shellboard.db`) |
 | `SHELLBOARD_TMUX_SOCKET` | `shellboard` | 专用 tmux socket 名 |
-| `SHELLBOARD_TOKEN` | 空(关闭鉴权) | 设置后所有 API 需 token 登录(HttpOnly cookie) |
+| `SHELLBOARD_TOKEN` | 空 = 回环免鉴权 | 非回环绑定时自动生成并打印;显式设置可固定 |
 | `SHELLBOARD_ALLOWED_ORIGINS` | vite dev 源 | 额外允许的 WebSocket Origin |
 
 ## 安全模型
 
 本质是 Web Shell + 文件系统写 + Git 写,权限极高:
 
-- 默认只监听 `127.0.0.1`;暴露公网前**必须**设置 `SHELLBOARD_TOKEN` 并走隧道。
+- 默认只监听 `127.0.0.1`,回环访问免鉴权;**绑定非回环地址时自动启用 token 鉴权**——未设置 `SHELLBOARD_TOKEN` 会生成随机 token 并打印在启动日志(Jupyter/code-server 模式),建议自行设置固定值。
 - 文件/路径全部经 sandbox(逐段 realpath),拒绝 `../` 与 symlink escape,有专项测试。
 - 没有通用 exec 端点;一切动作走显式 service。
 - 服务端不记录终端输入输出。
