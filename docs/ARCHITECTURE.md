@@ -187,6 +187,7 @@ git / files / tool terminal 的作用域是**当前选中 session 的 `cwd`**,�
 - API 一律 session 级:`/api/sessions/:id/git/...`、`/api/sessions/:id/files/...`、`/api/sessions/:id/tools/terminal`。project 级只保留 CRUD。
 - path sandbox 基准 = `session.cwd`;`session.cwd` 为空时回落 `project.rootPath`。
 - 理由:支持一个 project 下多 worktree 并行多个 session;消除"右侧看的是哪个分支的 diff"的歧义。
+- **唯一的例外是上传缓冲区(attachments lane)**:`~/.shellboard/uploads/<sessionId>/` 是显式建模的第二根(UploadService,自带 sandbox)。它存在的意义是让"丢给 agent 看的附件"完全不写进业务仓库;agent 通过绝对路径读取它。cwd 内的 `files/upload`(用户显式导航到某目录再传)仍走 D1 sandbox,两者是不同的契约:缓冲区重名自动改名,cwd 内重名 409。
 
 ### D2 独立 tmux socket
 
@@ -222,6 +223,10 @@ WebSocket 断开 / 浏览器关闭 → 只杀 node-pty(tmux client),不碰 tmux 
 
 已知 UX 限制:重连后 xterm.js 只有当前屏,历史输出在 tmux copy-mode 里。M5 提供 History 按钮向 PTY 写入 prefix+`[`,并在文档写明。
 
+### D6 用户主动的路径注入(Send to terminal)
+
+Shellboard 不解析终端状态、不自主发起任何 PTY 输入(见开头红线)。唯一 carve-out 与 History 按钮同类:**用户显式点击**触发的 `tmux send-keys -l -- <绝对路径>`——纯文本、无换行、不回车,字节与键盘输入不可区分,提交永远由用户完成。禁止任何变体:自动粘贴、定时发送、带 `Enter`、读取屏幕来决定时机。"现在能不能打字"这个问题要么读屏(禁止)要么瞎猜(会打坏 vim/半行命令),所以时机责任永远在用户:终端就在眼前,点击前可见。
+
 ## 5. API Surface(全集)
 
 ```text
@@ -248,9 +253,15 @@ GET    /api/sessions/:id/files?path=          # 列目录
 GET    /api/sessions/:id/files/content?path=
 PUT    /api/sessions/:id/files/content?path=
 GET    /api/sessions/:id/files/download?path= # 原始字节下载(≤100MB)
-POST   /api/sessions/:id/files                # create/upload
+POST   /api/sessions/:id/files                # create(JSON)
+POST   /api/sessions/:id/files/upload         # 二进制上传到 cwd 内目录 ?path=&name=(≤100MB,重名 409)
 PATCH  /api/sessions/:id/files                # rename
 DELETE /api/sessions/:id/files?path=&recursive=
+
+POST   /api/sessions/:id/uploads              # 二进制上传到上传缓冲区 ?name=(≤100MB,重名自动改名)
+GET    /api/sessions/:id/uploads              # 缓冲区列表(最新在前)
+DELETE /api/sessions/:id/uploads?name=        # 删除缓冲区文件
+POST   /api/sessions/:id/uploads/send         # 把绝对路径打进 agent pane(D6,无换行不回车)
 
 WS     /api/sessions/:id/tools/terminal       # session.cwd 下 bash,不落 tmux,随浏览器关闭结束
 
