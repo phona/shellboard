@@ -183,17 +183,15 @@ export function TerminalView({
       )}
 
       {showHistoryBar && (
-        <div className="terminal-banner history">
-          <span>HISTORY — typing returns to live</span>
-          <button
-            type="button"
-            className="btn primary"
-            onClick={terminal.scrollToLive}
-            title="Jump to bottom (Ctrl+End)"
-          >
-            ↓ live
-          </button>
-        </div>
+        <button
+          type="button"
+          className="history-pill"
+          onClick={terminal.scrollToLive}
+          title="Viewing history — click to return to live (Ctrl+End)"
+        >
+          HISTORY
+          <span className="pill-action">↓ live</span>
+        </button>
       )}
 
       {banner && (

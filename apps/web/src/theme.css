@@ -597,9 +597,36 @@ button:focus-visible {
   color: var(--warning);
 }
 
-.terminal-banner.history {
-  justify-content: space-between;
+
+/* ---------- history pill ---------- */
+
+.history-pill {
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
   background: var(--surface);
+  opacity: 0.88;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  box-shadow: var(--shadow);
+}
+
+.history-pill:hover {
+  opacity: 1;
+  color: var(--text);
+}
+
+.history-pill .pill-action {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* ---------- tool view ---------- */
