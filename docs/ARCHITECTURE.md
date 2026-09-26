@@ -252,6 +252,8 @@ DELETE /api/sessions/:id/files?path=&recursive=
 
 WS     /api/sessions/:id/tools/terminal       # session.cwd 下 bash,不落 tmux,随浏览器关闭结束
 
+GET    /api/fs/directories?path=              # 只读目录浏览(项目路径选择器),仅列目录名,受统一鉴权保护
+
 WS     /api/events                            # SessionCreated/Updated/Deleted/ActivityChanged
 ```
 

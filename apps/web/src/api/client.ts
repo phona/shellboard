@@ -2,6 +2,7 @@ import type {
   CreateFileInput,
   CreateProjectInput,
   CreateSessionInput,
+  DirectoryListing,
   FileContent,
   FileEntry,
   FileList,
@@ -108,6 +109,10 @@ export const api = {
         method: "POST",
         json: { path },
       }),
+  },
+  fs: {
+    directories: (path?: string) =>
+      http<DirectoryListing>(`/api/fs/directories${query({ path })}`),
   },
   files: {
     list: (id: string, path = ".") =>

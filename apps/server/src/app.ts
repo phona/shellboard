@@ -9,6 +9,7 @@ import { registerProjectRoutes } from "./routes/projects.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerFileRoutes } from "./routes/files.js";
+import { registerFsRoutes } from "./routes/fs.js";
 
 export interface BuildAppOptions {
   logger: boolean;
@@ -27,6 +28,7 @@ export async function buildApp(
   registerSessionRoutes(app, services);
   registerGitRoutes(app, services);
   registerFileRoutes(app, services);
+  registerFsRoutes(app);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {

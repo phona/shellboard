@@ -96,6 +96,19 @@ export const FileEntrySchema = z.object({
 });
 export type FileEntry = z.infer<typeof FileEntrySchema>;
 
+export const DirectoryEntrySchema = z.object({
+  name: z.string(),
+  path: z.string(),
+});
+export type DirectoryEntry = z.infer<typeof DirectoryEntrySchema>;
+
+export const DirectoryListingSchema = z.object({
+  path: z.string(),
+  parent: z.string().nullable(),
+  entries: z.array(DirectoryEntrySchema),
+});
+export type DirectoryListing = z.infer<typeof DirectoryListingSchema>;
+
 export const FileListSchema = z.object({
   path: z.string(),
   entries: z.array(FileEntrySchema),

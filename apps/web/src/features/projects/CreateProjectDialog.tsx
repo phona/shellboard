@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { Project } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
+import { DirectoryPickerModal } from "../../components/DirectoryPickerModal";
 import { Modal } from "../../components/Modal";
 
 export function CreateProjectDialog({
@@ -14,6 +15,7 @@ export function CreateProjectDialog({
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [rootPath, setRootPath] = useState("");
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -47,11 +49,16 @@ export function CreateProjectDialog({
         </label>
         <label>
           Root path
-          <input
-            value={rootPath}
-            onChange={(event) => setRootPath(event.target.value)}
-            placeholder="/home/you/projects/race-platform"
-          />
+          <span className="path-row">
+            <input
+              value={rootPath}
+              onChange={(event) => setRootPath(event.target.value)}
+              placeholder="/home/you/projects/race-platform"
+            />
+            <button type="button" onClick={() => setPickerOpen(true)}>
+              Browse…
+            </button>
+          </span>
         </label>
         {error && <div className="form-error">{error}</div>}
         <div className="modal-actions">
@@ -63,6 +70,13 @@ export function CreateProjectDialog({
           </button>
         </div>
       </form>
+      {pickerOpen && (
+        <DirectoryPickerModal
+          initialPath={rootPath || undefined}
+          onSelect={(path) => setRootPath(path)}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </Modal>
   );
 }
