@@ -108,6 +108,7 @@ export class TerminalBridge {
       pty,
       () => {
         ended = true;
+        this.tmux.clearCopyModeListener(session.tmuxName);
         if (this.clients.get(session.id) === client) {
           this.clients.delete(session.id);
           this.tracker.setAttached(session.id, false);
@@ -128,7 +129,9 @@ export class TerminalBridge {
     );
 
     // A previous client may have left the pane in copy-mode; sync the new
-    // socket's history-mode state with reality.
+    // socket's history-mode state with reality, and keep it in sync from
+    // every scroll path (including tmux's auto-exit at the bottom).
+    this.tmux.setCopyModeListener(session.tmuxName, (active) => setCopyMode(active));
     void this.tmux
       .isInCopyMode(session.tmuxName)
       .then((active) => setCopyMode(active))

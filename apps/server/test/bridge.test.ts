@@ -168,6 +168,38 @@ it("exits copy-mode on user input and on scroll-bottom", async () => {
   await services.sessions.kill(session.id);
 });
 
+it("clears history mode when scrolling back to the bottom", async () => {
+  const { services, session } = await createBashSession();
+  const ws = new FakeWS();
+  services.bridge.attach(ws.asWebSocket(), session);
+  await waitFor(() => ws.output().length > 0);
+
+  ws.emitMessage(Buffer.from("seq 1 500\r"), true);
+  await sleep(800);
+  ws.emitMessage(Buffer.from(JSON.stringify({ type: "scroll", lines: 10 })), false);
+  await sleep(700);
+  const paneInMode = async (): Promise<string> => {
+    const result = await execa(
+      "tmux",
+      ["-L", services.config.tmuxSocket, "display-message", "-p", "-t", session.tmuxName, "#{pane_in_mode}"],
+    );
+    return result.stdout.trim();
+  };
+  expect(await paneInMode()).toBe("1");
+
+  // scrolling back to the bottom must exit copy-mode AND tell the client,
+  // so the HISTORY pill hides itself
+  ws.emitMessage(Buffer.from(JSON.stringify({ type: "scroll", lines: -10 })), false);
+  await sleep(700);
+  expect(await paneInMode()).toBe("0");
+  expect(
+    ws.text.some((frame) => frame.includes('"copy-mode"') && frame.includes('"active":false')),
+  ).toBe(true);
+
+  ws.close();
+  await services.sessions.kill(session.id);
+});
+
 it("forwards keystrokes through to the running shell", async () => {
   const { services, session } = await createBashSession();
   const ws = new FakeWS();

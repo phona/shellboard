@@ -126,6 +126,20 @@ export class TmuxService {
   private readonly scrollPending = new Map<string, number>();
   private readonly scrollDraining = new Set<string>();
   private readonly opQueues = new Map<string, Promise<void>>();
+  private readonly copyModeListeners = new Map<string, (active: boolean) => void>();
+
+  /** Notified whenever a scroll operation enters or leaves copy-mode. */
+  setCopyModeListener(name: string, listener: (active: boolean) => void): void {
+    this.copyModeListeners.set(name, listener);
+  }
+
+  clearCopyModeListener(name: string): void {
+    this.copyModeListeners.delete(name);
+  }
+
+  private notifyCopyMode(name: string, active: boolean): void {
+    this.copyModeListeners.get(name)?.(active);
+  }
 
   scroll(name: string, lines: number): void {
     const merged = Math.max(-60, Math.min(60, (this.scrollPending.get(name) ?? 0) + lines));
@@ -143,6 +157,7 @@ export class TmuxService {
       await execa("tmux", this.args("send-keys", "-t", name, "-X", "cancel"), {
         reject: false,
       });
+      this.notifyCopyMode(name, false);
     });
   }
 
@@ -192,6 +207,7 @@ export class TmuxService {
         "tmux",
         this.args("copy-mode", "-H", "-t", name, ";", "send-keys", "-t", name, "-X", "-N", String(lines), "scroll-up"),
       );
+      this.notifyCopyMode(name, true);
       return;
     }
     await execa("tmux", this.args("send-keys", "-t", name, "-X", "-N", String(-lines), "scroll-down"), {
@@ -203,9 +219,11 @@ export class TmuxService {
       { reject: false },
     );
     if (position.stdout.trim() === "0") {
+      // tmux's own lifecycle: back at the bottom, copy-mode exits
       await execa("tmux", this.args("send-keys", "-t", name, "-X", "cancel"), {
         reject: false,
       });
+      this.notifyCopyMode(name, false);
     }
   }
 }
