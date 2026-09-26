@@ -126,6 +126,13 @@ export class TerminalBridge {
         },
       },
     );
+
+    // A previous client may have left the pane in copy-mode; sync the new
+    // socket's history-mode state with reality.
+    void this.tmux
+      .isInCopyMode(session.tmuxName)
+      .then((active) => setCopyMode(active))
+      .catch(() => {});
     ws.on("close", () => {
       // If the socket dropped without the PTY exiting, clean up here.
       if (!ended && this.clients.get(session.id) === client) {

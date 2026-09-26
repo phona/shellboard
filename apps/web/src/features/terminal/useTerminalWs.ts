@@ -54,6 +54,7 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   const [status, setStatus] = useState<TerminalStatus>("connecting");
   const [searchOpen, setSearchOpen] = useState(false);
   const [historyMode, setHistoryMode] = useState(false);
+  const historyModeRef = useRef(false);
   const [pasteConfirmation, setPasteConfirmation] = useState<{ lines: number } | null>(null);
   const pendingPasteRef = useRef<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -326,6 +327,11 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
         ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
             term.write(new Uint8Array(event.data));
+            // tmux re-shows its copy-mode selection cursor on every redraw;
+            // keep the terminal cursorless while viewing frozen history
+            if (historyModeRef.current) {
+              term.write("\x1b[?25l");
+            }
             return;
           }
           try {
@@ -340,6 +346,11 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
               setStatus("ended");
             } else if (message.type === "copy-mode") {
               setHistoryMode(message.active === true);
+              historyModeRef.current = message.active === true;
+              // restore the cursor when back to the live view
+              if (message.active !== true) {
+                term.write("\x1b[?25h");
+              }
             }
           } catch {
             // non-JSON control frame

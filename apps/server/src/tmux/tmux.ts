@@ -77,6 +77,8 @@ export class TmuxService {
   /**
    * Options every shellboard session runs with:
    * - monitor-activity: feeds the activity observer (D3)
+   * - status off: the green status line is dead weight in the web UI — the
+   *   sidebar already shows session identity, the web chrome shows time.
    * - mouse off: plain drag stays native browser selection (desktop-style);
    *   wheel scrolling is routed to tmux through the server-side scroll
    *   channel instead of tmux mouse reporting.
@@ -85,6 +87,7 @@ export class TmuxService {
    */
   async applySessionOptions(name: string): Promise<void> {
     await execa("tmux", this.args("set-option", "-t", name, "monitor-activity", "on"));
+    await execa("tmux", this.args("set-option", "-t", name, "status", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "mouse", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "set-clipboard", "on"));
     // Many distros ship xterm-256color terminfo without the Ms (set
@@ -143,6 +146,14 @@ export class TmuxService {
     });
   }
 
+  async isInCopyMode(name: string): Promise<boolean> {
+    const result = await execa(
+      "tmux",
+      this.args("display-message", "-p", "-t", name, "#{pane_in_mode}"),
+    );
+    return result.stdout.trim() === "1";
+  }
+
   private enqueue(name: string, task: () => Promise<void>): Promise<void> {
     const prev = this.opQueues.get(name) ?? Promise.resolve();
     const next = prev.then(task, task);
@@ -174,9 +185,12 @@ export class TmuxService {
 
   private async applyScroll(name: string, lines: number): Promise<void> {
     if (lines > 0) {
+      // -H hides the copy-mode position indicator (e.g. [40/451]) — the web
+      // HISTORY bar already conveys the mode. Re-entering copy-mode does not
+      // reset the scroll position (verified on tmux 3.7).
       await execa(
         "tmux",
-        this.args("copy-mode", "-t", name, ";", "send-keys", "-t", name, "-X", "-N", String(lines), "scroll-up"),
+        this.args("copy-mode", "-H", "-t", name, ";", "send-keys", "-t", name, "-X", "-N", String(lines), "scroll-up"),
       );
       return;
     }

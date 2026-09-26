@@ -36,8 +36,10 @@ describe("TmuxService (real tmux on dedicated socket)", () => {
       return result.stdout.trim();
     };
     // mouse off keeps selection native in the browser; scrolling goes
-    // through the server-side scroll channel
+    // through the server-side scroll channel; the status line is dead
+    // weight in the web UI
     expect(await show("mouse")).toBe("off");
+    expect(await show("status")).toBe("off");
     expect(await show("set-clipboard")).toBe("on");
     const overrides = await show("terminal-overrides");
     expect(overrides).toContain("Ms=");
