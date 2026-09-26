@@ -1,11 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AGENT_PRESETS } from "@shellboard/contracts";
 import type { AgentType, Project } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { useUi } from "../../state/store";
-import { basenamePosix } from "../../util/dom";
+import { codename } from "../../util/codename";
 
 export function CreateSessionDialog({
   project,
@@ -24,29 +24,18 @@ export function CreateSessionDialog({
   const [busy, setBusy] = useState(false);
 
   /**
-   * Auto-naming: a custom cwd (worktree) names the session after its
-   * directory; otherwise the agent id, numbered when taken. The name field
-   * previews it and wins when the user types one.
+   * Auto-naming: an empty name becomes a codename (adjective-noun) that is
+   * not taken within the project. Stable while the dialog is open — it only
+   * recomputes when the session list changes.
    */
-  function generatedName(): string {
-    const cwdBase = cwd.trim()
-      ? basenamePosix(cwd.trim().replace(/\/+$/, ""))
-      : "";
-    const agentBase =
-      agentType === "custom"
-        ? (command.trim().split(/\s+/)[0] ?? "").toLowerCase()
-        : agentType;
-    const base = cwdBase || agentBase || "session";
+  const generated = useMemo(() => {
     const taken = new Set(
       (sessionsQuery.data?.sessions ?? [])
         .filter((item) => item.session.projectId === project.id)
         .map((item) => item.session.name),
     );
-    if (!taken.has(base)) return base;
-    let n = 2;
-    while (taken.has(`${base}-${n}`)) n++;
-    return `${base}-${n}`;
-  }
+    return codename(taken);
+  }, [sessionsQuery.data, project.id]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -55,7 +44,7 @@ export function CreateSessionDialog({
     try {
       const created = await api.sessions.create({
         projectId: project.id,
-        name: name.trim() || generatedName(),
+        name: name.trim() || generated,
         cwd: cwd || undefined,
         agentType,
         command: agentType === "custom" ? command : undefined,
@@ -89,7 +78,7 @@ export function CreateSessionDialog({
           <input
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder={generatedName()}
+            placeholder={generated}
           />
         </label>
         <label>
