@@ -38,11 +38,11 @@ pnpm dev              # 并行起 server(:7700)与 vite(:5173),开发用
 开发态远程访问(从局域网其他机器打开):
 
 ```bash
-SHELLBOARD_WEB_HOST=0.0.0.0 SHELLBOARD_WEB_PORT=5199 SHELLBOARD_TOKEN=your-secret pnpm dev
+pnpm dev -- --host 0.0.0.0 --port 5199
 # 浏览器访问 http://<server-ip>:5199
 ```
 
-注意:`pnpm dev -- --host …` 这类参数透传会被递归脚本打碎(vite 收到的是 `-- --host`),请用上面的环境变量;API 端口/地址用 `SHELLBOARD_PORT` / `SHELLBOARD_HOST`。
+参数只作用于前端(vite);API 的地址/端口用 `SHELLBOARD_HOST` / `SHELLBOARD_PORT` 调整,前端代理目标自动跟随。对外暴露时建议同时设置 `SHELLBOARD_TOKEN`。
 
 生产部署:
 

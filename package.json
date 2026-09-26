@@ -13,7 +13,7 @@
     ]
   },
   "scripts": {
-    "dev": "pnpm -r --parallel --if-present dev",
+    "dev": "node scripts/dev.mjs",
     "build": "pnpm --filter @shellboard/web build",
     "check": "pnpm -r --if-present typecheck && eslint .",
     "test": "pnpm --filter @shellboard/server test"
