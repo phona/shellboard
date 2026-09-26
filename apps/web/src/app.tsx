@@ -17,6 +17,10 @@ export function App() {
         event.preventDefault();
         useUi.getState().toggleLeft();
       }
+      if (matchesBinding(event, KEYBINDINGS.toggleRight)) {
+        event.preventDefault();
+        useUi.getState().toggleRight();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

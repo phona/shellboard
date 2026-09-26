@@ -2,6 +2,7 @@ import { basicSetup, EditorView } from "codemirror";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../../api/client";
+import { Modal } from "../../components/Modal";
 import { toast } from "../../state/toasts";
 
 export function FileEditor({
@@ -22,6 +23,7 @@ export function FileEditor({
   const [text, setText] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [mtime, setMtime] = useState<number | null>(null);
+  const [pendingExit, setPendingExit] = useState<null | (() => void)>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const changeRef = useRef<(value: string) => void>(() => {});
   const content = query.data;
@@ -52,6 +54,19 @@ export function FileEditor({
     return () => view.destroy();
   }, [content]);
 
+  // Unsaved edits are lost on any exit that unmounts the editor (refresh, tab
+  // close, navigation, session switch). Block browser-level exits while dirty;
+  // in-app exits go through the confirmation below.
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+
   const save = useMutation({
     mutationFn: () =>
       api.files.save(sessionId, path, {
@@ -66,7 +81,7 @@ export function FileEditor({
     },
     onError: (err) => {
       if (err instanceof ApiError && err.status === 409) {
-        toast("file changed on disk — reload to continue", "error");
+        toast("file changed on disk — reload to continue (discards unsaved edits)", "error");
       } else {
         toast(err instanceof ApiError ? err.message : "save failed", "error");
       }
@@ -79,6 +94,12 @@ export function FileEditor({
     });
   };
 
+  // Any exit that discards edits asks first when the buffer is dirty.
+  const guard = (action: () => void) => () => {
+    if (dirty) setPendingExit(() => action);
+    else action();
+  };
+
   const download = () => {
     window.location.href = api.files.downloadUrl(sessionId, path);
   };
@@ -86,13 +107,13 @@ export function FileEditor({
   return (
     <>
       <div className="editor-toolbar">
-        <button type="button" className="icon-btn" title="Back" onClick={onBack}>
+        <button type="button" className="icon-btn" title="Back" onClick={guard(onBack)}>
           ←
         </button>
         <span className="path">{path}</span>
         <span style={{ flex: 1 }} />
         {dirty && <span className="muted">unsaved</span>}
-        <button type="button" onClick={() => void reload()}>
+        <button type="button" onClick={guard(() => void reload())}>
           reload
         </button>
         <button type="button" onClick={download}>
@@ -121,6 +142,31 @@ export function FileEditor({
         )}
         {content && !content.binary && <div ref={hostRef} className="cm-host" />}
       </div>
+
+      {pendingExit && (
+        <Modal title="Discard unsaved edits?" onClose={() => setPendingExit(null)}>
+          <div>
+            You have unsaved changes in <strong>{path}</strong>. Leaving now discards them. This
+            cannot be undone.
+          </div>
+          <div className="modal-actions">
+            <button type="button" onClick={() => setPendingExit(null)}>
+              Keep editing
+            </button>
+            <button
+              type="button"
+              className="btn danger"
+              onClick={() => {
+                const exit = pendingExit;
+                setPendingExit(null);
+                exit();
+              }}
+            >
+              Discard
+            </button>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
