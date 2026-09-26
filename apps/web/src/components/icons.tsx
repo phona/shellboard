@@ -78,3 +78,21 @@ export function IconFontPlus() {
     </svg>
   );
 }
+
+export function IconPanelLeft() {
+  return (
+    <svg {...base()}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16" />
+    </svg>
+  );
+}
+
+export function IconPanelRight() {
+  return (
+    <svg {...base()}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M15 4v16" />
+    </svg>
+  );
+}

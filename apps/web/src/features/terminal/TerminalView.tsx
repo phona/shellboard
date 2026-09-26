@@ -1,11 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { SessionWithRuntime } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconPaste, IconSearch } from "../../components/icons";
 import { Modal } from "../../components/Modal";
 import { toast } from "../../state/toasts";
 import { useUi } from "../../state/store";
+import { useMediaQuery } from "../../util/useMediaQuery";
 import type { TerminalStatus } from "./useTerminalWs";
 import { useTerminalWs } from "./useTerminalWs";
 
@@ -32,8 +33,46 @@ export function TerminalView({
   );
   const [fullscreen, setFullscreen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
+  // Keep in sync with the @media (max-width: 760px) blocks in theme.css.
+  const isMobile = useMediaQuery("(max-width: 760px)");
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const queryClient = useQueryClient();
   const exited = variant === "agent" && runtime.activity === "exited";
+
+  useEffect(() => {
+    if (!menu) return;
+    // Dismiss on the next pointerdown outside the menu, in capture phase. A
+    // window click listener cannot be used: React flushes this effect
+    // synchronously during the opening click, so the same click would close
+    // the menu instantly. The opening gesture's pointerdown already happened.
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".ctx-menu, [data-ctx-opener]")) return;
+      setMenu(null);
+    };
+    const close = () => setMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menu]);
+
+  const openMenu = (anchor: HTMLElement) => {
+    const rect = anchor.getBoundingClientRect();
+    const next = {
+      x: Math.min(rect.left, window.innerWidth - 172),
+      y: rect.bottom + 4,
+    };
+    // The opener is exempt from pointerdown dismissal, so this is a toggle.
+    setMenu((current) => (current ? null : next));
+  };
 
   const restart = async () => {
     try {
@@ -64,59 +103,77 @@ export function TerminalView({
           {variant === "tool" && <span className="muted">ephemeral — dies with the tab</span>}
         </div>
         <div className="terminal-actions">
-          <button
-            type="button"
-            className="icon-btn"
-            title="Search (Ctrl+F)"
-            onClick={() => terminal.setSearchOpen(!terminal.searchOpen)}
-          >
-            <IconSearch />
-          </button>
-          <button
-            type="button"
-            className="icon-btn"
-            title="Smaller font"
-            onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize - 1)}
-          >
-            <IconFontMinus />
-          </button>
-          <button
-            type="button"
-            className="icon-btn"
-            title="Larger font"
-            onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize + 1)}
-          >
-            <IconFontPlus />
-          </button>
-          <button
-            type="button"
-            className="icon-btn"
-            title="Copy selection (drag to select)"
-            onClick={terminal.copySelection}
-          >
-            <IconCopy />
-          </button>
-          <button type="button" className="icon-btn" title="Paste" onClick={terminal.paste}>
-            <IconPaste />
-          </button>
-          {variant === "agent" && (
+          {isMobile ? (
+            // AoE-style mobile chrome: one overflow entry instead of seven
+            // unlabeled icon targets; every action is a labeled menu item.
             <button
               type="button"
               className="icon-btn"
-              title="History (one page up)"
-              onClick={terminal.historyPage}
+              title="Terminal actions"
+              aria-label="Terminal actions"
+              aria-haspopup="menu"
+              data-ctx-opener=""
+              onClick={(event) => openMenu(event.currentTarget)}
             >
-              <IconHistory />
+              ⋯
             </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Search (Ctrl+F)"
+                onClick={() => terminal.setSearchOpen(!terminal.searchOpen)}
+              >
+                <IconSearch />
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Smaller font"
+                onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize - 1)}
+              >
+                <IconFontMinus />
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Larger font"
+                onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize + 1)}
+              >
+                <IconFontPlus />
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Copy selection (drag to select)"
+                onClick={terminal.copySelection}
+              >
+                <IconCopy />
+              </button>
+              <button type="button" className="icon-btn" title="Paste" onClick={terminal.paste}>
+                <IconPaste />
+              </button>
+              {variant === "agent" && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="History (one page up)"
+                  onClick={terminal.historyPage}
+                >
+                  <IconHistory />
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-btn"
+                title="Fullscreen"
+                onClick={() => setFullscreen((value) => !value)}
+              >
+                <IconFullscreen />
+              </button>
+            </>
           )}
-          <button
-            type="button"
-            className="icon-btn"
-            title="Fullscreen"
-            onClick={() => setFullscreen((value) => !value)}
-          >
-            <IconFullscreen />
-          </button>
         </div>
       </div>
 
@@ -207,6 +264,135 @@ export function TerminalView({
               retry now
             </button>
           )}
+        </div>
+      )}
+
+      {menu && (
+        <div className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
+          <button
+            type="button"
+            onClick={() => {
+              terminal.setSearchOpen(true);
+              setMenu(null);
+            }}
+          >
+            Search
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              useUi.getState().setFontSize(useUi.getState().fontSize + 1);
+              setMenu(null);
+            }}
+          >
+            Bigger font
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              useUi.getState().setFontSize(useUi.getState().fontSize - 1);
+              setMenu(null);
+            }}
+          >
+            Smaller font
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              terminal.copySelection();
+              setMenu(null);
+            }}
+          >
+            Copy selection
+          </button>
+          {variant === "agent" && (
+            <button
+              type="button"
+              onClick={() => {
+                terminal.historyPage();
+                setMenu(null);
+              }}
+            >
+              History page up
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setFullscreen((value) => !value);
+              setMenu(null);
+            }}
+          >
+            {fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          </button>
+        </div>
+      )}
+
+      {/* AoE-style accessory key row: soft keyboards have no Esc/Ctrl/arrows,
+          which makes a shell unusable without it. Bytes go through the same
+          WS path as typed input; mousedown preventDefault keeps the soft
+          keyboard open. */}
+      {isMobile && terminal.status === "connected" && !exited && (
+        <div className="term-keys" role="group" aria-label="Terminal keys">
+          <button
+            type="button"
+            aria-label="Up arrow"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => terminal.sendText("\x1b[A")}
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            aria-label="Down arrow"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => terminal.sendText("\x1b[B")}
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => terminal.sendText("\t")}
+          >
+            Tab
+          </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => terminal.sendText("\x1b")}
+          >
+            Esc
+          </button>
+          <button
+            type="button"
+            className={terminal.ctrlArmed ? "armed" : ""}
+            aria-pressed={terminal.ctrlArmed}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => terminal.setCtrlArmed(!terminal.ctrlArmed)}
+          >
+            Ctrl
+          </button>
+          <button
+            type="button"
+            aria-label="Ctrl+C"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              terminal.setCtrlArmed(false);
+              terminal.sendText("\x03");
+            }}
+          >
+            ^C
+          </button>
+          <button
+            type="button"
+            className="term-keys-paste"
+            aria-label="Paste"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={terminal.paste}
+          >
+            <IconPaste />
+          </button>
         </div>
       )}
     </div>

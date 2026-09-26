@@ -51,40 +51,68 @@ interface RenameState {
 function SessionItem({
   item,
   selected,
+  menuOpen,
   onMenu,
 }: {
   item: SessionWithRuntime;
   selected: boolean;
-  onMenu: (menu: MenuState) => void;
+  menuOpen: boolean;
+  onMenu: (menu: MenuState | null) => void;
 }) {
   const selectSession = useUi((state) => state.selectSession);
   return (
-    <button
-      type="button"
-      className={selected ? "session-item selected" : "session-item"}
-      aria-current={selected ? "true" : undefined}
-      onClick={() => selectSession(item.session.id)}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onMenu({ x: event.clientX, y: event.clientY, session: item });
-      }}
-      onKeyDown={(event) => {
-        // Keyboard equivalent of right-click: open the session menu at the row.
-        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
-        event.preventDefault();
-        const rect = event.currentTarget.getBoundingClientRect();
-        onMenu({ x: rect.left, y: rect.bottom, session: item });
-      }}
-    >
-      <span className={`act-dot ${item.runtime.activity}`} title={item.runtime.activity} />
-      <span className="text">
-        <span className="name">{item.session.name}</span>
-        <span className="meta">
-          {AGENT_LABEL[item.session.agentType]} · <SessionBranch sessionId={item.session.id} /> ·{" "}
-          {relativeTime(item.runtime.lastActivityAt)}
+    <div className={selected ? "session-row selected" : "session-row"}>
+      <button
+        type="button"
+        className="session-item"
+        aria-current={selected ? "true" : undefined}
+        onClick={() => selectSession(item.session.id)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          onMenu({ x: event.clientX, y: event.clientY, session: item });
+        }}
+        onKeyDown={(event) => {
+          // Keyboard equivalent of right-click: open the session menu at the row.
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          onMenu({ x: rect.left, y: rect.bottom, session: item });
+        }}
+      >
+        <span className={`act-dot ${item.runtime.activity}`} title={item.runtime.activity} />
+        <span className="text">
+          <span className="name">{item.session.name}</span>
+          <span className="meta">
+            {AGENT_LABEL[item.session.agentType]} · <SessionBranch sessionId={item.session.id} /> ·{" "}
+            {relativeTime(item.runtime.lastActivityAt)}
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+      {/* Touch path to the session menu: no hover, and long-press does not
+          reliably fire contextmenu on iOS. Hidden on pointer devices. */}
+      <button
+        type="button"
+        className="icon-btn session-menu-btn"
+        title="Session actions"
+        aria-label={`Actions for ${item.session.name}`}
+        aria-haspopup="menu"
+        data-ctx-opener=""
+        onClick={(event) => {
+          if (menuOpen) {
+            onMenu(null);
+            return;
+          }
+          const rect = event.currentTarget.getBoundingClientRect();
+          onMenu({
+            x: Math.min(rect.left, window.innerWidth - 172),
+            y: rect.bottom + 4,
+            session: item,
+          });
+        }}
+      >
+        ⋯
+      </button>
+    </div>
   );
 }
 
@@ -124,15 +152,24 @@ export function SessionSidebar() {
 
   useEffect(() => {
     if (!menu) return;
+    // Dismiss on the next pointerdown outside the menu, in capture phase. A
+    // window click listener cannot be used: React flushes this effect
+    // synchronously during the opening click, so a click-opened menu would
+    // close instantly. The opening gesture's pointerdown already happened.
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".ctx-menu, [data-ctx-opener]")) return;
+      setMenu(null);
+    };
     const close = () => setMenu(null);
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setMenu(null);
     };
-    window.addEventListener("click", close);
+    document.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("resize", close);
     window.addEventListener("keydown", onKey);
     return () => {
-      window.removeEventListener("click", close);
+      document.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("resize", close);
       window.removeEventListener("keydown", onKey);
     };
@@ -231,6 +268,7 @@ export function SessionSidebar() {
                     key={item.session.id}
                     item={item}
                     selected={item.session.id === selectedSessionId}
+                    menuOpen={menu?.session.session.id === item.session.id}
                     onMenu={setMenu}
                   />
                 ))}

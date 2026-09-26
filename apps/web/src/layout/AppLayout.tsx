@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { IconPanelLeft, IconPanelRight } from "../components/icons";
 import { DiffPanel } from "../features/git/DiffPanel";
 import { DiffView } from "../features/git/DiffView";
 import { FilesPanel } from "../features/files/FilesPanel";
@@ -257,12 +258,63 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
   );
 
   // Phone layout: the three regions stay, but one pane at a time. The agent
-  // terminal stays mounted underneath the overlays so the PTY never churns;
-  // panes are switched from the bottom nav (statusbar's mobile replacement).
+  // terminal stays mounted underneath the overlays so the PTY never churns.
+  // Single control plane, AoE-style: pane toggles live in the top bar and
+  // the accessory key row is the only bar at the bottom.
+  const mobileTopbar = (
+    <header className="topbar">
+      <button
+        type="button"
+        className={
+          mobilePanel === "sessions" ? "icon-btn topbar-toggle active" : "icon-btn topbar-toggle"
+        }
+        title="Sessions"
+        aria-label="Toggle sessions panel"
+        aria-expanded={mobilePanel === "sessions"}
+        onClick={() =>
+          useUi.getState().setMobilePanel(mobilePanel === "sessions" ? "none" : "sessions")
+        }
+      >
+        <IconPanelLeft />
+        {sessions.length > 0 && <span className="badge">{sessions.length}</span>}
+      </button>
+      <div className="topbar-title">
+        {selected ? (
+          <>
+            <span className="topbar-name">{selected.session.name}</span>
+            <span
+              className={`act-dot ${selected.runtime.activity}`}
+              title={selected.runtime.activity}
+            />
+          </>
+        ) : (
+          <span className="topbar-name">Shellboard</span>
+        )}
+      </div>
+      <div className="topbar-actions">
+        <button
+          type="button"
+          className={
+            mobilePanel === "tools" ? "icon-btn topbar-toggle active" : "icon-btn topbar-toggle"
+          }
+          title="Diff, files, tool shell"
+          aria-label="Toggle tools panel"
+          aria-expanded={mobilePanel === "tools"}
+          onClick={() => useUi.getState().setMobilePanel(mobilePanel === "tools" ? "none" : "tools")}
+        >
+          <IconPanelRight />
+          {diffCount > 0 && <span className="badge">{diffCount}</span>}
+        </button>
+        <CycleThemeButton />
+        <SettingsPopover />
+      </div>
+    </header>
+  );
+
   if (isMobile) {
     return (
       <div className="app">
-        {topbar}
+        {mobileTopbar}
         <div className="main">
           <main className="center">{centerContent}</main>
           {mobilePanel === "sessions" && (
@@ -275,8 +327,16 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
                 }
               }}
             >
-              <div className="mobile-drawer-status">
-                {working} working · {idle} idle
+              <div className="mobile-drawer-top">
+                <input
+                  className="search"
+                  placeholder="Search sessions"
+                  value={searchQuery}
+                  onChange={(event) => useUi.getState().setSearchQuery(event.target.value)}
+                />
+                <span className="mobile-drawer-counts">
+                  {working} working · {idle} idle
+                </span>
               </div>
               {sidebar}
             </aside>
@@ -310,37 +370,6 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
             </aside>
           )}
         </div>
-        <nav className="bottom-nav" aria-label="Panels">
-          <button
-            type="button"
-            className={mobilePanel === "sessions" ? "active" : ""}
-            onClick={() =>
-              useUi.getState().setMobilePanel(mobilePanel === "sessions" ? "none" : "sessions")
-            }
-          >
-            Sessions
-            {sessions.length > 0 && <span className="badge">{sessions.length}</span>}
-          </button>
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={mobilePanel === "tools" && rightTab === tab.id ? "active" : ""}
-              onClick={() => {
-                const ui = useUi.getState();
-                if (ui.mobilePanel === "tools" && ui.rightTab === tab.id) {
-                  ui.setMobilePanel("none");
-                } else {
-                  ui.setRightTab(tab.id);
-                  ui.setMobilePanel("tools");
-                }
-              }}
-            >
-              {tab.label}
-              {tab.id === "diff" && diffCount > 0 && <span className="badge">{diffCount}</span>}
-            </button>
-          ))}
-        </nav>
       </div>
     );
   }
