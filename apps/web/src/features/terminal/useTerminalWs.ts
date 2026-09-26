@@ -90,6 +90,41 @@ export function useTerminalWs(path: string): TerminalApi {
     term.unicode.activeVersion = "11";
     term.open(container);
 
+    // OSC 52: tmux selection copy (set-clipboard on) and copy commands from
+    // inner CLIs arrive here; bridge them into the browser clipboard.
+    term.parser.registerOscHandler(52, (data) => {
+      const split = data.indexOf(";");
+      if (split === -1) return false;
+      const payload = data.slice(split + 1);
+      if (!payload) return true; // clipboard clear request
+      try {
+        const bytes = Uint8Array.from(atob(payload), (ch) => ch.charCodeAt(0));
+        void navigator.clipboard
+          .writeText(new TextDecoder().decode(bytes))
+          .catch(() => {
+            // clipboard permission denied
+          });
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    // Right-click = paste (PuTTY style). tmux's own right-click menu is
+    // unbound server-side; capture phase wins over xterm's mouse handling.
+    const contextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      void navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text) term.paste(text);
+        })
+        .catch(() => {
+          // clipboard permission denied
+        });
+    };
+    container.addEventListener("contextmenu", contextMenu, true);
+
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
@@ -175,6 +210,7 @@ export function useTerminalWs(path: string): TerminalApi {
     return () => {
       disposed = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      container.removeEventListener("contextmenu", contextMenu, true);
       observer.disconnect();
       unsubscribeTheme();
       wsRef.current?.close();

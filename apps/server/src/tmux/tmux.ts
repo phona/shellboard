@@ -79,10 +79,19 @@ export class TmuxService {
    * - monitor-activity: feeds the activity observer (D3)
    * - mouse: wheel scrolling goes to tmux (copy-mode scroll) instead of the
    *   alternate-scroll fallback, which sends arrow keys to the inner shell.
+   * - set-clipboard: releasing a mouse selection also pushes the outer
+   *   clipboard via OSC 52 (xterm.js handles it → navigator.clipboard).
    */
   async applySessionOptions(name: string): Promise<void> {
     await execa("tmux", this.args("set-option", "-t", name, "monitor-activity", "on"));
     await execa("tmux", this.args("set-option", "-t", name, "mouse", "on"));
+    await execa("tmux", this.args("set-option", "-t", name, "set-clipboard", "on"));
+    // tmux ≥ 3.4 binds right-click to its own popup menu; the browser layer
+    // owns right-click (paste). Key bindings are server-global, but this
+    // socket is ours alone (D2).
+    await execa("tmux", this.args("unbind-key", "-n", "MouseDown3Pane"), {
+      reject: false,
+    });
   }
 
   async killSession(name: string): Promise<boolean> {
