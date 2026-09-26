@@ -146,6 +146,42 @@ export class FileService {
     };
   }
 
+  /**
+   * Binary upload into a directory inside the session cwd (explicit intent:
+   * the user navigated there). Conflicts are 409 — the working tree is the
+   * user's repo, never silently overwritten. The buffer lane (UploadService)
+   * uniquifies instead; the two lanes have different contracts on purpose.
+   */
+  upload(cwd: string, relDir: string, fileName: string, data: Buffer): FileEntry {
+    if (
+      fileName.includes("/") ||
+      fileName.includes("\\") ||
+      fileName.includes("\0") ||
+      fileName === "." ||
+      fileName === ".."
+    ) {
+      throw httpError(400, "invalid name");
+    }
+    const root = sessionRoot(cwd);
+    const dir = realpathInside(root, relDir || ".");
+    if (!fs.statSync(dir).isDirectory()) {
+      throw httpError(400, `not a directory: ${relDir}`);
+    }
+    const absolute = resolveInside(dir, fileName);
+    if (fs.existsSync(absolute)) throw httpError(409, `already exists: ${fileName}`);
+    const tmp = `${absolute}.sb-tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmp, data);
+    fs.renameSync(tmp, absolute);
+    const stat = fs.statSync(absolute);
+    return {
+      name: fileName,
+      path: toRelativePosix(root, absolute),
+      type: "file",
+      size: stat.size,
+      mtime: stat.mtimeMs,
+    };
+  }
+
   rename(cwd: string, relPath: string, newName: string): void {
     if (newName.includes("/") || newName.includes("\\") || newName.includes("\0")) {
       throw httpError(400, "invalid name");

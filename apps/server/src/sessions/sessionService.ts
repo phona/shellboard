@@ -16,6 +16,7 @@ import type { TmuxService } from "../tmux/tmux.js";
 import type { ActivityTracker } from "../activity/tracker.js";
 import type { EventBus } from "../events/bus.js";
 import type { ProjectService } from "../projects/projectService.js";
+import type { UploadService } from "../uploads/uploadService.js";
 
 interface SessionRow {
   id: string;
@@ -64,6 +65,7 @@ export class SessionService {
   private readonly tmux: TmuxService;
   private readonly tracker: ActivityTracker;
   private readonly bus: EventBus;
+  private readonly uploads: UploadService;
 
   constructor(
     db: Db,
@@ -71,12 +73,14 @@ export class SessionService {
     tmux: TmuxService,
     tracker: ActivityTracker,
     bus: EventBus,
+    uploads: UploadService,
   ) {
     this.db = db;
     this.projects = projects;
     this.tmux = tmux;
     this.tracker = tracker;
     this.bus = bus;
+    this.uploads = uploads;
   }
 
   list(): SessionWithRuntime[] {
@@ -176,6 +180,9 @@ export class SessionService {
     await this.tmux.killSession(session.tmuxName);
     this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
     this.tracker.drop(id);
+    // the upload buffer belongs to the session — no owner, no file (restart
+    // keeps it on purpose: the agent may still reference those paths)
+    this.uploads.dropSession(id);
     this.bus.publish({ type: "session.deleted", sessionId: id });
   }
 }

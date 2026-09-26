@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { ServerConfig } from "./config.js";
 import { openDatabase, type Db } from "./db/db.js";
 import { TmuxService } from "./tmux/tmux.js";
@@ -10,6 +11,7 @@ import { TerminalBridge } from "./terminal/bridge.js";
 import { ToolTerminalManager } from "./terminal/toolTerminal.js";
 import { GitService } from "./git/gitService.js";
 import { FileService } from "./files/fileService.js";
+import { UploadService } from "./uploads/uploadService.js";
 
 export interface Services {
   config: ServerConfig;
@@ -24,6 +26,7 @@ export interface Services {
   tools: ToolTerminalManager;
   git: GitService;
   files: FileService;
+  uploads: UploadService;
 }
 
 export function buildServices(config: ServerConfig): Services {
@@ -33,7 +36,8 @@ export function buildServices(config: ServerConfig): Services {
   const tracker = new ActivityTracker(bus);
   const observer = new ActivityObserver(db, tmux, tracker);
   const projects = new ProjectService(db);
-  const sessions = new SessionService(db, projects, tmux, tracker, bus);
+  const uploads = new UploadService(path.join(config.homeDir, "uploads"));
+  const sessions = new SessionService(db, projects, tmux, tracker, bus, uploads);
   return {
     config,
     db,
@@ -47,5 +51,6 @@ export function buildServices(config: ServerConfig): Services {
     tools: new ToolTerminalManager(),
     git: new GitService(),
     files: new FileService(),
+    uploads,
   };
 }

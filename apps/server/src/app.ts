@@ -9,6 +9,7 @@ import { registerProjectRoutes } from "./routes/projects.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerFileRoutes } from "./routes/files.js";
+import { registerUploadRoutes } from "./routes/uploads.js";
 import { registerFsRoutes } from "./routes/fs.js";
 
 export interface BuildAppOptions {
@@ -23,16 +24,39 @@ export async function buildApp(
     logger: options.logger ? { level: process.env.SHELLBOARD_LOG_LEVEL ?? "info" } : false,
   });
 
+  // Binary uploads POST the raw file as application/octet-stream (no
+  // multipart dependency). Per-route bodyLimit caps each upload at 100MB;
+  // the global JSON limit stays at Fastify's default.
+  app.addContentTypeParser(
+    "application/octet-stream",
+    { parseAs: "buffer" },
+    (_request, body, done) => {
+      done(null, body);
+    },
+  );
+
   await registerAuth(app, services.config);
   registerProjectRoutes(app, services);
   registerSessionRoutes(app, services);
   registerGitRoutes(app, services);
   registerFileRoutes(app, services);
+  registerUploadRoutes(app, services);
   registerFsRoutes(app);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {
       return reply.code(error.statusCode).send({ error: error.message });
+    }
+    // Fastify's own 4xx (body-too-large 413, validation 400, …) carry a
+    // safe message and must not be masked as a generic 500.
+    const framed = error as { statusCode?: unknown; message?: unknown };
+    if (
+      typeof framed.statusCode === "number" &&
+      framed.statusCode >= 400 &&
+      framed.statusCode < 500 &&
+      typeof framed.message === "string"
+    ) {
+      return reply.code(framed.statusCode).send({ error: framed.message });
     }
     request.log.error(error);
     return reply.code(500).send({ error: "internal error" });

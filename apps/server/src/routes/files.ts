@@ -4,10 +4,13 @@ import {
   CreateFileInputSchema,
   RenameFileInputSchema,
   SaveFileInputSchema,
+  UploadToDirQuerySchema,
 } from "@shellboard/contracts";
 import type { Services } from "../services.js";
 import { httpError } from "../errors.js";
-import { paramId, parseBody, queryString } from "../http/helpers.js";
+import { paramId, parseBody, parseQuery, queryString } from "../http/helpers.js";
+
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function requiredPath(request: { query: unknown }): string {
   const query = queryString(request);
@@ -66,6 +69,25 @@ export function registerFileRoutes(app: FastifyInstance, services: Services): vo
     notifyChange(services.sessions.get(id).projectId);
     return reply.code(201).send(entry);
   });
+
+  // Binary upload into a directory inside the session cwd (?path=&name=) —
+  // explicit intent, conflicts are 409 (the buffer lane uniquifies instead).
+  app.post(
+    "/api/sessions/:id/files/upload",
+    { bodyLimit: MAX_UPLOAD_BYTES },
+    async (request, reply) => {
+      const id = paramId(request);
+      const { path: dir, name } = parseQuery(UploadToDirQuerySchema, queryString(request));
+      const body = request.body;
+      if (!Buffer.isBuffer(body)) {
+        throw httpError(400, "expected an application/octet-stream body");
+      }
+      if (body.length === 0) throw httpError(400, "empty upload");
+      const entry = services.files.upload(cwdOf(id), dir, name, body);
+      notifyChange(services.sessions.get(id).projectId);
+      return reply.code(201).send(entry);
+    },
+  );
 
   app.patch("/api/sessions/:id/files", async (request) => {
     const id = paramId(request);

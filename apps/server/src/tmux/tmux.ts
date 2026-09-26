@@ -1,4 +1,5 @@
 import { execa } from "execa";
+import { httpError } from "../errors.js";
 
 export interface TmuxSessionInfo {
   name: string;
@@ -120,6 +121,23 @@ export class TmuxService {
 
   async killServer(): Promise<void> {
     await execa("tmux", this.args("kill-server"), { reject: false });
+  }
+
+  /**
+   * Types literal text into the session's pane — the "Send to terminal"
+   * primitive (D6). No newline, no Enter: the bytes are indistinguishable
+   * from keyboard input, the user stays the one who submits. Never call this
+   * on a timer or on server-side state; it exists for explicit user actions.
+   */
+  async sendText(name: string, text: string): Promise<void> {
+    const result = await execa(
+      "tmux",
+      this.args("send-keys", "-t", name, "-l", "--", text),
+      { reject: false },
+    );
+    if (result.failed) {
+      throw httpError(409, `cannot send to session: ${(result.stderr || result.stdout).trim()}`);
+    }
   }
 
   /**
