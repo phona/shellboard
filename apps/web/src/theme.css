@@ -196,21 +196,43 @@ button:focus-visible {
   background: var(--accent);
 }
 
-/* Slim restore tab shown when a side panel is collapsed. The collapsed
-   panel state is persisted, so this must always be reachable — it is the
-   only visible recovery path alongside the panel keybinding. */
+/* Restore tab shown when a side panel is collapsed. The collapsed panel
+   state is persisted, so this must always be reachable — it is the only
+   visible recovery path alongside the panel keybinding. A bare 14px strip
+   proved undiscoverable in practice, so the tab carries a vertical label. */
 .panel-reopen {
   flex: none;
   align-self: stretch;
-  width: 14px;
-  padding: 0;
+  width: 20px;
+  padding: 10px 0 8px;
   border: none;
   border-radius: 0;
-  background: var(--surface);
+  background: var(--surface-2);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-reopen.left {
+  border-right: 1px solid var(--border);
+}
+
+.panel-reopen.right {
+  border-left: 1px solid var(--border);
+}
+
+.panel-reopen-label {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.08em;
+}
+
+.panel-reopen-chev {
+  font-size: 12px;
 }
 
 .panel-reopen:hover {
@@ -325,6 +347,15 @@ button:focus-visible {
 
 .session-item.selected {
   background: var(--surface-selected);
+  /* Selection is the most load-bearing state in the app: which shell am I
+     driving right now. The tint alone is a ~6% luminance shift — invisible
+     in grayscale and weak at a glance. The accent bar is a shape, so it
+     survives without color; the name weight carries the rest. */
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.session-item.selected .name {
+  font-weight: 600;
 }
 
 .session-item .name {
@@ -687,6 +718,9 @@ button:focus-visible {
 
 .file-row.selected {
   background: var(--surface-selected);
+  /* Same selection language as the sidebar: accent bar first, tint second,
+     so "the row I am acting on" reads identically in both panels. */
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .file-row .letter {
