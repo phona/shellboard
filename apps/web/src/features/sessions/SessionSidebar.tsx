@@ -59,23 +59,32 @@ function SessionItem({
 }) {
   const selectSession = useUi((state) => state.selectSession);
   return (
-    <div
+    <button
+      type="button"
       className={selected ? "session-item selected" : "session-item"}
+      aria-current={selected ? "true" : undefined}
       onClick={() => selectSession(item.session.id)}
       onContextMenu={(event) => {
         event.preventDefault();
         onMenu({ x: event.clientX, y: event.clientY, session: item });
       }}
+      onKeyDown={(event) => {
+        // Keyboard equivalent of right-click: open the session menu at the row.
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        onMenu({ x: rect.left, y: rect.bottom, session: item });
+      }}
     >
       <span className={`act-dot ${item.runtime.activity}`} title={item.runtime.activity} />
-      <div className="text">
-        <div className="name">{item.session.name}</div>
-        <div className="meta">
+      <span className="text">
+        <span className="name">{item.session.name}</span>
+        <span className="meta">
           {AGENT_LABEL[item.session.agentType]} · <SessionBranch sessionId={item.session.id} /> ·{" "}
           {relativeTime(item.runtime.lastActivityAt)}
-        </div>
-      </div>
-    </div>
+        </span>
+      </span>
+    </button>
   );
 }
 
@@ -116,11 +125,16 @@ export function SessionSidebar() {
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenu(null);
+    };
     window.addEventListener("click", close);
     window.addEventListener("resize", close);
+    window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("click", close);
       window.removeEventListener("resize", close);
+      window.removeEventListener("keydown", onKey);
     };
   }, [menu]);
 
@@ -185,8 +199,16 @@ export function SessionSidebar() {
             <div key={project.id} className="project-group">
               <div
                 className="project-head"
-                onClick={() => toggleProject(project.id)}
+                role="button"
+                tabIndex={0}
+                aria-expanded={!collapsed}
                 title={project.rootPath}
+                onClick={() => toggleProject(project.id)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  toggleProject(project.id);
+                }}
               >
                 <span className={collapsed ? "chevron" : "chevron open"}>▸</span>
                 <span>{project.name}</span>

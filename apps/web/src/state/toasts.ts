@@ -10,6 +10,10 @@ let toasts: Toast[] = [];
 let nextId = 1;
 const listeners = new Set<() => void>();
 
+// Burst cap: a failed batch (multi-file upload, several mutations at once)
+// must not flood the corner. Newest wins; the stack never grows past this.
+const MAX_TOASTS = 4;
+
 function emit(): void {
   for (const listener of listeners) listener();
 }
@@ -21,7 +25,7 @@ export function dismiss(id: number): void {
 
 export function toast(message: string, kind: "info" | "error" = "info"): void {
   const item: Toast = { id: nextId++, message, kind };
-  toasts = [...toasts, item];
+  toasts = [...toasts, item].slice(-MAX_TOASTS);
   emit();
   window.setTimeout(() => dismiss(item.id), 4000);
 }
