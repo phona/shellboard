@@ -25,6 +25,9 @@ export interface TerminalApi {
   historyMode: boolean;
   reconnect(): void;
   sendText(text: string): void;
+  /** Sticky mobile Ctrl modifier: the next character is sent as its control code. */
+  ctrlArmed: boolean;
+  setCtrlArmed(value: boolean): void;
   /** Enter history mode scrolled one page up (former tmux prefix+[ button). */
   historyPage(): void;
   /** Exit copy-mode and return to the live view. */
@@ -57,6 +60,8 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   const historyModeRef = useRef(false);
   const [pasteConfirmation, setPasteConfirmation] = useState<{ lines: number } | null>(null);
   const pendingPasteRef = useRef<string | null>(null);
+  const [ctrlArmed, setCtrlArmedState] = useState(false);
+  const ctrlArmedRef = useRef(false);
   const [nonce, setNonce] = useState(0);
   const fontSize = useUi((state) => state.fontSize);
   const scrollback = useUi((state) => state.scrollback);
@@ -292,9 +297,25 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
       });
       term.onData((data) => {
         const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(encoderRef.current.encode(data));
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        // Sticky mobile Ctrl (soft keyboards have no Ctrl key): the next
+        // single character is sent as its control code — a-z fold to
+        // 0x01–0x1a, space and @[\]^_ follow ASCII caret notation. Any
+        // other input disarms and passes through untouched.
+        if (ctrlArmedRef.current) {
+          ctrlArmedRef.current = false;
+          setCtrlArmedState(false);
+          if (data.length === 1) {
+            const code = data.charCodeAt(0);
+            const isLetter = (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+            const isCaretPunct = code === 0x20 || (code >= 0x40 && code <= 0x5f);
+            if (isLetter || isCaretPunct) {
+              ws.send(encoderRef.current.encode(String.fromCharCode(code & 0x1f)));
+              return;
+            }
+          }
         }
+        ws.send(encoderRef.current.encode(data));
       });
 
       const doFit = () => {
@@ -427,6 +448,11 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     }
   }, []);
 
+  const setCtrlArmed = useCallback((value: boolean) => {
+    ctrlArmedRef.current = value;
+    setCtrlArmedState(value);
+  }, []);
+
   const paste = useCallback(() => {
     void navigator.clipboard
       .readText()
@@ -484,6 +510,8 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     historyMode,
     reconnect,
     sendText,
+    ctrlArmed,
+    setCtrlArmed,
     historyPage,
     scrollToLive,
     paste,

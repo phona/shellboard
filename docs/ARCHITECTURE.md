@@ -48,7 +48,9 @@ Session / Shell / Activity / Diff / Files
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **左边切 Agent,中间用 Agent,右边审查 Agent。**
+> **左边切 Agent,中间用 Agent(或点开变更文件看 Diff),右边审查与导航。**
+
+主工作区在 agent terminal 与 DiffView 之间切换:点击 TOOL VIEW 里的变更文件,该文件的 diff 以全宽在中间打开。切换只是显示层的——agent terminal 保持挂载隐藏、WS 不断、尺寸不变,‹ Back to terminal / Esc 返回时 tmux 零 reflow。TOOL VIEW 另支持临时最大化(⛶,fixed 覆盖层,Esc 或 "Back to shell" 返回),右侧 Diff tab 提供扁平分组与目录树两种文件列表。
 
 ### 1.2 Non-goals(约束性)
 
