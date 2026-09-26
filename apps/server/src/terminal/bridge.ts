@@ -3,6 +3,7 @@ import { type WebSocket } from "ws";
 import type { Session } from "@shellboard/contracts";
 import { processEnv } from "../env.js";
 import type { ActivityTracker } from "../activity/tracker.js";
+import type { TmuxService } from "../tmux/tmux.js";
 import { sendControl, wirePtyToSocket } from "./wire.js";
 
 interface AttachedClient {
@@ -19,11 +20,13 @@ interface AttachedClient {
 export class TerminalBridge {
   private readonly socket: string;
   private readonly tracker: ActivityTracker;
+  private readonly tmux: TmuxService;
   private readonly clients = new Map<string, AttachedClient>();
 
-  constructor(socket: string, tracker: ActivityTracker) {
+  constructor(socket: string, tracker: ActivityTracker, tmux: TmuxService) {
     this.socket = socket;
     this.tracker = tracker;
+    this.tmux = tmux;
   }
 
   attach(ws: WebSocket, session: Session): void {
@@ -55,13 +58,18 @@ export class TerminalBridge {
     this.tracker.setAttached(session.id, true);
 
     let ended = false;
-    wirePtyToSocket(ws, pty, () => {
-      ended = true;
-      if (this.clients.get(session.id) === client) {
-        this.clients.delete(session.id);
-        this.tracker.setAttached(session.id, false);
-      }
-    });
+    wirePtyToSocket(
+      ws,
+      pty,
+      () => {
+        ended = true;
+        if (this.clients.get(session.id) === client) {
+          this.clients.delete(session.id);
+          this.tracker.setAttached(session.id, false);
+        }
+      },
+      { onScroll: (lines) => this.tmux.scroll(session.tmuxName, lines) },
+    );
     ws.on("close", () => {
       // If the socket dropped without the PTY exiting, clean up here.
       if (!ended && this.clients.get(session.id) === client) {

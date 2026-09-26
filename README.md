@@ -81,7 +81,7 @@ pnpm check            # typecheck(tsc)+ eslint
 
 ## 已知限制
 
-- 终端滚轮滚动由 tmux 接管(`mouse on`,滚轮 = copy-mode 滚动);**划线松手即复制到系统剪贴板**:普通拖拽走 tmux 选择 + OSC 52(已通过 `terminal-overrides` 显式声明 Ms,多数发行版 terminfo 缺失会导致静默失效),Shift+拖拽走浏览器原生选区,两条路径松手都自动复制;`Ctrl+C`/工具栏 ⧉ 复制选区;**右键 = 粘贴**(tmux 自带右键菜单已解绑)。触摸设备:点按等效鼠标点击,拖动是 tmux 文本选择——触摸滚动暂无完美方案。
+- 终端交互是桌面式默认:普通拖拽 = 浏览器原生选区(松手自动复制,双击选词/三击选行),`Ctrl+C`/⧉ 复制,`Ctrl+V`(或 Ctrl+Shift+V/右键)粘贴;滚轮由服务端驱动 tmux copy-mode 滚动,滚回底部自动退出(手动 `q`/`Enter`/`Esc` 也可);tmux/TUI 的鼠标转发已关闭以换取原生选择——TUI 内的鼠标点击不可用。
 - 重连后终端只显示当前屏,历史在 tmux copy-mode(终端工具条的 ⇲ 按钮进入)。
 - Activity 是 tmux 输出活动的近似(Agent 静默思考会显示 idle),这是设计取舍而非 bug。
 - Windows 不支持(通过浏览器访问 Linux 上的 Shellboard)。

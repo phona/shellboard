@@ -4,6 +4,7 @@ import { WebSocket } from "ws";
 export type ClientControlMessage =
   | { type: "init"; cols?: number; rows?: number }
   | { type: "resize"; cols?: number; rows?: number }
+  | { type: "scroll"; lines?: number }
   | { type: "ping" };
 
 export type ServerControlMessage =
@@ -17,6 +18,7 @@ export function parseControlMessage(data: Buffer): ClientControlMessage | null {
     if (
       parsed.type === "init" ||
       parsed.type === "resize" ||
+      parsed.type === "scroll" ||
       parsed.type === "ping"
     ) {
       return parsed as ClientControlMessage;
@@ -25,6 +27,14 @@ export function parseControlMessage(data: Buffer): ClientControlMessage | null {
   } catch {
     return null;
   }
+}
+
+export function clampLines(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0;
+  const rounded = Math.round(value);
+  if (rounded > 60) return 60;
+  if (rounded < -60) return -60;
+  return rounded;
 }
 
 export function sendControl(ws: WebSocket, message: ServerControlMessage): void {
@@ -38,6 +48,10 @@ export function clampSize(value: number | undefined, fallback: number): number {
   return Math.min(Math.max(Math.round(value), 2), 500);
 }
 
+export interface WireOptions {
+  onScroll?: (lines: number) => void;
+}
+
 /**
  * Wires one PTY to one socket: binary frames are terminal bytes (opaque),
  * text frames are control messages. Kills the PTY when the socket closes.
@@ -46,6 +60,7 @@ export function wirePtyToSocket(
   ws: WebSocket,
   pty: nodePty.IPty,
   onEnd: () => void,
+  options: WireOptions = {},
 ): void {
   pty.onData((data) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -69,6 +84,9 @@ export function wirePtyToSocket(
       } catch {
         // pane/session may be gone; tmux resizes on next attach
       }
+    } else if (message.type === "scroll") {
+      const lines = clampLines(message.lines);
+      if (lines !== 0) options.onScroll?.(lines);
     } else if (message.type === "ping") {
       sendControl(ws, { type: "pong" });
     }

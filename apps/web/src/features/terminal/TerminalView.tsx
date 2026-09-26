@@ -25,6 +25,8 @@ export function TerminalView({
     variant === "agent"
       ? `/api/sessions/${session.id}/terminal`
       : `/api/sessions/${session.id}/tools/terminal`,
+    // tmux owns the agent scrollback; the tool shell scrolls natively
+    variant === "agent",
   );
   const [fullscreen, setFullscreen] = useState(false);
   const [searchValue, setSearchValue] = useState("");

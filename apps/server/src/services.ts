@@ -43,7 +43,7 @@ export function buildServices(config: ServerConfig): Services {
     observer,
     projects,
     sessions,
-    bridge: new TerminalBridge(config.tmuxSocket, tracker),
+    bridge: new TerminalBridge(config.tmuxSocket, tracker, tmux),
     tools: new ToolTerminalManager(),
     git: new GitService(),
     files: new FileService(),

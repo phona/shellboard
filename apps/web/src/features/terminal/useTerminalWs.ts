@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { readTerminalTheme, subscribeTheme } from "../../state/theme";
 import { useUi } from "../../state/store";
 import { toast } from "../../state/toasts";
+import { KEYBINDINGS, matchesBinding } from "../../util/dom";
 import { wsUrl } from "../../api/client";
 
 export type TerminalStatus =
@@ -33,7 +34,7 @@ export interface TerminalApi {
 const FONT_FAMILY =
   "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace";
 
-export function useTerminalWs(path: string): TerminalApi {
+export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -91,8 +92,46 @@ export function useTerminalWs(path: string): TerminalApi {
     term.unicode.activeVersion = "11";
     term.open(container);
 
-    // OSC 52: tmux selection copy (set-clipboard on) and copy commands from
-    // inner CLIs arrive here; bridge them into the browser clipboard.
+    // Desktop-style selection by default: swallow mouse-reporting modes
+    // (DECSET 1000/1002/1003/1006/1015) and alternate scroll (1007), so
+    // plain drag is a native browser selection and the wheel never degrades
+    // to arrow keys.
+    const isMouseMode = (value: number | number[]): boolean =>
+      (typeof value === "number" ? [value] : value).every((n) =>
+        [1000, 1002, 1003, 1006, 1007, 1015].includes(n),
+      );
+    const swallowMouse = (params: (number | number[])[]): boolean =>
+      params.length > 0 && params.every(isMouseMode);
+    term.parser.registerCsiHandler({ final: "h", intermediates: "?" }, swallowMouse);
+    term.parser.registerCsiHandler({ final: "l", intermediates: "?" }, swallowMouse);
+
+    // Wheel: tmux owns the scrollback, so forward scroll intents to the
+    // server (it drives tmux copy-mode). Accumulated and throttled.
+    let wheelAccum = 0;
+    let wheelTimer: number | null = null;
+    const flushWheel = () => {
+      wheelTimer = null;
+      const lines = Math.max(-40, Math.min(40, Math.round(wheelAccum)));
+      wheelAccum = 0;
+      const ws = wsRef.current;
+      if (lines !== 0 && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "scroll", lines }));
+      }
+    };
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      wheelAccum += event.deltaY / 18;
+      if (wheelTimer === null) {
+        wheelTimer = window.setTimeout(flushWheel, 90);
+      }
+    };
+    if (wheelScroll) {
+      container.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    }
+
+    // OSC 52: tmux copy commands and inner CLIs arrive here; bridge them
+    // into the browser clipboard.
     term.parser.registerOscHandler(52, (data) => {
       const split = data.indexOf(";");
       if (split === -1) return false;
@@ -102,7 +141,7 @@ export function useTerminalWs(path: string): TerminalApi {
         const bytes = Uint8Array.from(atob(payload), (ch) => ch.charCodeAt(0));
         const text = new TextDecoder().decode(bytes);
         void navigator.clipboard.writeText(text).catch(() => {
-          toast("Copy blocked by the browser — use Shift+drag, then Ctrl+C", "error");
+          toast("Copy blocked by the browser — select, then press Ctrl+C", "error");
         });
         return true;
       } catch {
@@ -110,8 +149,8 @@ export function useTerminalWs(path: string): TerminalApi {
       }
     });
 
-    // Desktop-style selection: releasing a native (Shift+drag) selection
-    // copies it, like an editor with copy-on-select.
+    // Copy-on-release: releasing a selection copies it, like an editor
+    // with copy-on-select.
     const onMouseUp = (event: MouseEvent) => {
       if (event.button !== 0) return;
       const selection = term.getSelection();
@@ -122,8 +161,7 @@ export function useTerminalWs(path: string): TerminalApi {
     };
     container.addEventListener("mouseup", onMouseUp, true);
 
-    // Right-click = paste (PuTTY style). tmux's own right-click menu is
-    // unbound server-side; capture phase wins over xterm's mouse handling.
+    // Right-click = paste (PuTTY style). Capture phase wins over xterm.
     const contextMenu = (event: MouseEvent) => {
       event.preventDefault();
       void navigator.clipboard
@@ -139,19 +177,31 @@ export function useTerminalWs(path: string): TerminalApi {
 
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true;
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+      if (matchesBinding(event, KEYBINDINGS.terminalSearch)) {
         setSearchOpen(true);
         return false;
       }
-      // tmux mouse reporting is on, so selection is Shift+drag; make the
-      // usual copy chord work on it instead of sending ^C to the shell
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && term.hasSelection()) {
+      if (matchesBinding(event, KEYBINDINGS.terminalCopy) && term.hasSelection()) {
         void navigator.clipboard
           .writeText(term.getSelection())
           .catch(() => {
             // clipboard permission denied
           });
         term.clearSelection();
+        return false;
+      }
+      if (
+        matchesBinding(event, KEYBINDINGS.terminalPaste) ||
+        matchesBinding(event, KEYBINDINGS.terminalPasteShift)
+      ) {
+        void navigator.clipboard
+          .readText()
+          .then((text) => {
+            if (text) term.paste(text);
+          })
+          .catch(() => {
+            toast("Paste blocked by the browser — use the paste button", "error");
+          });
         return false;
       }
       return true;
@@ -224,6 +274,10 @@ export function useTerminalWs(path: string): TerminalApi {
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       container.removeEventListener("contextmenu", contextMenu, true);
       container.removeEventListener("mouseup", onMouseUp, true);
+      if (wheelScroll) {
+        container.removeEventListener("wheel", onWheel, { capture: true });
+        if (wheelTimer !== null) window.clearTimeout(wheelTimer);
+      }
       observer.disconnect();
       unsubscribeTheme();
       wsRef.current?.close();
@@ -231,7 +285,7 @@ export function useTerminalWs(path: string): TerminalApi {
       termRef.current = null;
     };
     // scrollback changes require a fresh Terminal instance
-  }, [path, nonce, scrollback, fontSize, sendResize]);
+  }, [path, nonce, scrollback, fontSize, sendResize, wheelScroll]);
 
   useEffect(() => {
     const term = termRef.current;

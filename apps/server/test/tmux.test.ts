@@ -21,7 +21,7 @@ describe("TmuxService (real tmux on dedicated socket)", () => {
     expect(await services.tmux.sessionExists(name)).toBe(false);
   });
 
-  it("applies mouse, clipboard, and right-click options to new sessions", async () => {
+  it("applies session options: mouse off, clipboard via OSC 52", async () => {
     const services = await createServices();
     const dir = makeTempDir();
     const name = `opt-${Date.now()}`;
@@ -35,16 +35,12 @@ describe("TmuxService (real tmux on dedicated socket)", () => {
       );
       return result.stdout.trim();
     };
-    expect(await show("mouse")).toBe("on");
+    // mouse off keeps selection native in the browser; scrolling goes
+    // through the server-side scroll channel
+    expect(await show("mouse")).toBe("off");
     expect(await show("set-clipboard")).toBe("on");
-
-    // tmux ≥ 3.4's default right-click menu must be gone (browser owns it)
-    const bindings = await execa(
-      "tmux",
-      ["-L", services.config.tmuxSocket, "list-keys", "-n", "MouseDown3Pane"],
-      { reject: false },
-    );
-    expect(bindings.stdout).not.toContain("MouseDown3Pane");
+    const overrides = await show("terminal-overrides");
+    expect(overrides).toContain("Ms=");
 
     await services.tmux.killSession(name);
   });

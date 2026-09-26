@@ -1,6 +1,12 @@
 export const KEYBINDINGS = {
   search: "/",
   toggleLeft: "Ctrl+b",
+  toggleRight: "Ctrl+Shift+b",
+  exitMaximize: "Escape",
+  terminalSearch: "Ctrl+f",
+  terminalCopy: "Ctrl+c",
+  terminalPaste: "Ctrl+v",
+  terminalPasteShift: "Ctrl+Shift+v",
 } as const;
 
 export function matchesBinding(event: KeyboardEvent, binding: string): boolean {

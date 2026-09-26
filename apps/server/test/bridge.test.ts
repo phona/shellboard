@@ -91,21 +91,40 @@ it("takes over an existing client instead of sharing the PTY (D4)", async () => 
   await services.sessions.kill(session.id);
 });
 
-it("pushes OSC 52 to the outer terminal when a drag selection is copied", async () => {
+it("drives tmux scrollback through the scroll channel and pushes OSC 52", async () => {
   const { services, session } = await createBashSession();
   const ws = new FakeWS();
   services.bridge.attach(ws.asWebSocket(), session);
   await waitFor(() => ws.output().length > 0);
-  await waitFor(() => ws.output().includes("1002"), 10000);
 
-  // SGR mouse: left press, drag with button held, release. Small gaps so
-  // tmux processes each event.
-  ws.emitMessage(Buffer.from("\x1b[<0;10;3M"), true);
-  await sleep(200);
-  ws.emitMessage(Buffer.from("\x1b[<32;30;6M"), true);
-  await sleep(200);
-  ws.emitMessage(Buffer.from("\x1b[<0;30;6m"), true);
+  // make the scrollback scrollable
+  ws.emitMessage(Buffer.from("seq 1 500\r"), true);
+  await sleep(800);
+  const { execa } = await import("execa");
+  const paneInMode = async (): Promise<string> => {
+    const result = await execa(
+      "tmux",
+      ["-L", services.config.tmuxSocket, "display-message", "-p", "-t", session.tmuxName, "#{pane_in_mode}"],
+    );
+    return result.stdout.trim();
+  };
 
+  // wheel up enters copy-mode and scrolls
+  services.tmux.scroll(session.tmuxName, 10);
+  await sleep(700);
+  expect(await paneInMode()).toBe("1");
+
+  // wheel back down to the bottom exits copy-mode
+  services.tmux.scroll(session.tmuxName, -10);
+  await sleep(600);
+  expect(await paneInMode()).toBe("0");
+
+  // OSC 52 still flows: set-buffer -w pushes the buffer to the outer
+  // clipboard (tmux copy commands and inner CLIs rely on this)
+  await execa(
+    "tmux",
+    ["-L", services.config.tmuxSocket, "set-buffer", "-w", "sb-osc52-marker"],
+  );
   await waitFor(() => ws.output().includes("]52;"), 10000);
   ws.close();
   await services.sessions.kill(session.id);
