@@ -589,6 +589,11 @@ button:focus-visible {
   color: var(--warning);
 }
 
+.terminal-banner.history {
+  justify-content: space-between;
+  background: var(--surface);
+}
+
 /* ---------- tool view ---------- */
 
 .tool-tabs {

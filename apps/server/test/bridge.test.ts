@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execa } from "execa";
 import { expect, it } from "vitest";
 import { afterAllCleanup, createServices, FakeWS, makeTempDir, sleep, waitFor } from "./helpers";
 
@@ -126,6 +127,43 @@ it("drives tmux scrollback through the scroll channel and pushes OSC 52", async 
     ["-L", services.config.tmuxSocket, "set-buffer", "-w", "sb-osc52-marker"],
   );
   await waitFor(() => ws.output().includes("]52;"), 10000);
+  ws.close();
+  await services.sessions.kill(session.id);
+});
+
+it("exits copy-mode on user input and on scroll-bottom", async () => {
+  const { services, session } = await createBashSession();
+  const ws = new FakeWS();
+  services.bridge.attach(ws.asWebSocket(), session);
+  await waitFor(() => ws.output().length > 0);
+
+  // produce scrollable history, then scroll up via the scroll channel
+  ws.emitMessage(Buffer.from("seq 1 500\r"), true);
+  await sleep(800);
+  ws.emitMessage(Buffer.from(JSON.stringify({ type: "scroll", lines: 10 })), false);
+  await sleep(700);
+  const paneInMode = async (): Promise<string> => {
+    const result = await execa(
+      "tmux",
+      ["-L", services.config.tmuxSocket, "display-message", "-p", "-t", session.tmuxName, "#{pane_in_mode}"],
+    );
+    return result.stdout.trim();
+  };
+  expect(await paneInMode()).toBe("1");
+
+  // typing must cancel copy-mode first, then reach the shell
+  ws.emitMessage(Buffer.from("echo im-live-$((40+2))\r"), true);
+  await waitFor(() => ws.output().includes("im-live-42"), 10000);
+  expect(await paneInMode()).toBe("0");
+
+  // scroll up again, then Ctrl+End (scroll-bottom) returns to live
+  ws.emitMessage(Buffer.from(JSON.stringify({ type: "scroll", lines: 10 })), false);
+  await sleep(700);
+  expect(await paneInMode()).toBe("1");
+  ws.emitMessage(Buffer.from(JSON.stringify({ type: "scroll-bottom" })), false);
+  await sleep(700);
+  expect(await paneInMode()).toBe("0");
+
   ws.close();
   await services.sessions.kill(session.id);
 });

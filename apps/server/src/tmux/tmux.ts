@@ -114,21 +114,47 @@ export class TmuxService {
   }
 
   /**
-   * Scrolls a session without mouse reporting: wheel up enters copy-mode and
-   * scrolls, wheel down scrolls back and exits at the bottom (same lifecycle
-   * as tmux's own mouse wheel). Requests are coalesced per session because
-   * wheel events arrive faster than tmux commands complete.
+   * Scrolls a session without mouse reporting: copy-mode entry and scrolling
+   * are one chained tmux invocation; re-entering copy-mode does not reset
+   * the position (verified on tmux 3.7), so no state pre-check is needed.
+   * Wheel requests are coalesced per session, and scrolls share a FIFO with
+   * cancelCopyMode so cancels can never overtake a pending scroll.
    */
   private readonly scrollPending = new Map<string, number>();
+  private readonly scrollDraining = new Set<string>();
+  private readonly opQueues = new Map<string, Promise<void>>();
 
   scroll(name: string, lines: number): void {
     const merged = Math.max(-60, Math.min(60, (this.scrollPending.get(name) ?? 0) + lines));
     this.scrollPending.set(name, merged);
-    if (merged !== lines) return; // a run loop is already scheduled
-    void this.runScroll(name);
+    if (this.scrollDraining.has(name)) return;
+    this.scrollDraining.add(name);
+    void this.enqueue(name, async () => {
+      this.scrollDraining.delete(name);
+      await this.drainScroll(name);
+    });
   }
 
-  private async runScroll(name: string): Promise<void> {
+  cancelCopyMode(name: string): Promise<void> {
+    return this.enqueue(name, async () => {
+      await execa("tmux", this.args("send-keys", "-t", name, "-X", "cancel"), {
+        reject: false,
+      });
+    });
+  }
+
+  private enqueue(name: string, task: () => Promise<void>): Promise<void> {
+    const prev = this.opQueues.get(name) ?? Promise.resolve();
+    const next = prev.then(task, task);
+    this.opQueues.set(name, next);
+    void next.catch(() => {});
+    void next.finally(() => {
+      if (this.opQueues.get(name) === next) this.opQueues.delete(name);
+    });
+    return next;
+  }
+
+  private async drainScroll(name: string): Promise<void> {
     for (;;) {
       const lines = this.scrollPending.get(name) ?? 0;
       if (lines === 0) {
@@ -147,34 +173,25 @@ export class TmuxService {
   }
 
   private async applyScroll(name: string, lines: number): Promise<void> {
-    const inMode = async (): Promise<boolean> => {
-      const result = await execa(
-        "tmux",
-        this.args("display-message", "-p", "-t", name, "#{pane_in_mode}"),
-      );
-      return result.stdout.trim() === "1";
-    };
     if (lines > 0) {
-      if (!(await inMode())) {
-        await execa("tmux", this.args("copy-mode", "-t", name));
-      }
       await execa(
         "tmux",
-        this.args("send-keys", "-t", name, "-X", "-N", String(lines), "scroll-up"),
+        this.args("copy-mode", "-t", name, ";", "send-keys", "-t", name, "-X", "-N", String(lines), "scroll-up"),
       );
       return;
     }
-    if (!(await inMode())) return;
-    await execa(
-      "tmux",
-      this.args("send-keys", "-t", name, "-X", "-N", String(-lines), "scroll-down"),
-    );
+    await execa("tmux", this.args("send-keys", "-t", name, "-X", "-N", String(-lines), "scroll-down"), {
+      reject: false,
+    });
     const position = await execa(
       "tmux",
       this.args("display-message", "-p", "-t", name, "#{scroll_position}"),
+      { reject: false },
     );
     if (position.stdout.trim() === "0") {
-      await execa("tmux", this.args("send-keys", "-t", name, "-X", "cancel"));
+      await execa("tmux", this.args("send-keys", "-t", name, "-X", "cancel"), {
+        reject: false,
+      });
     }
   }
 }

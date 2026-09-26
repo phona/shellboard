@@ -21,8 +21,14 @@ export type TerminalStatus =
 export interface TerminalApi {
   containerRef: RefObject<HTMLDivElement>;
   status: TerminalStatus;
+  /** tmux copy-mode entered through the scroll channel (HISTORY indicator). */
+  historyMode: boolean;
   reconnect(): void;
   sendText(text: string): void;
+  /** Enter history mode scrolled one page up (former tmux prefix+[ button). */
+  historyPage(): void;
+  /** Exit copy-mode and return to the live view. */
+  scrollToLive(): void;
   paste(): void;
   /** Multi-line paste gate: set before anything containing newlines runs. */
   pasteConfirmation: { lines: number } | null;
@@ -46,9 +52,11 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   const searchRef = useRef<SearchAddon | null>(null);
   const searchOptionsRef = useRef<ISearchOptions | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const sendControlRef = useRef<((message: Record<string, unknown>) => void) | null>(null);
   const encoderRef = useRef(new TextEncoder());
   const [status, setStatus] = useState<TerminalStatus>("connecting");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [historyMode, setHistoryMode] = useState(false);
   const [pasteConfirmation, setPasteConfirmation] = useState<{ lines: number } | null>(null);
   const pendingPasteRef = useRef<string | null>(null);
   const [nonce, setNonce] = useState(0);
@@ -245,6 +253,18 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
         readAndGate();
         return false;
       }
+      if (matchesBinding(event, KEYBINDINGS.terminalBottom)) {
+        sendControlRef.current?.({ type: "scroll-bottom" });
+        return false;
+      }
+      if (matchesBinding(event, KEYBINDINGS.terminalPageUp)) {
+        sendControlRef.current?.({ type: "scroll", lines: term.rows - 2 });
+        return false;
+      }
+      if (matchesBinding(event, KEYBINDINGS.terminalPageDown)) {
+        sendControlRef.current?.({ type: "scroll", lines: -(term.rows - 2) });
+        return false;
+      }
       return true;
     });
     term.onData((data) => {
@@ -261,6 +281,12 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
         // container not laid out yet
       }
       sendResize();
+    };
+    sendControlRef.current = (message) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(message));
+      }
     };
 
     const connect = () => {
@@ -281,12 +307,14 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
           return;
         }
         try {
-          const message = JSON.parse(String(event.data)) as { type?: string };
+          const message = JSON.parse(String(event.data)) as { type?: string; active?: boolean };
           if (message.type === "taken-over") {
             setStatus("taken-over");
           } else if (message.type === "ended") {
             remoteEnded = true;
             setStatus("ended");
+          } else if (message.type === "copy-mode") {
+            setHistoryMode(message.active === true);
           }
         } catch {
           // non-JSON control frame
@@ -340,6 +368,15 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   }, [fontSize, sendResize]);
 
   const reconnect = useCallback(() => setNonce((value) => value + 1), []);
+
+  const historyPage = useCallback(() => {
+    const rows = termRef.current?.rows ?? 30;
+    sendControlRef.current?.({ type: "scroll", lines: Math.max(3, rows - 2) });
+  }, []);
+
+  const scrollToLive = useCallback(() => {
+    sendControlRef.current?.({ type: "scroll-bottom" });
+  }, []);
 
   const sendText = useCallback((text: string) => {
     const ws = wsRef.current;
@@ -402,8 +439,11 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   return {
     containerRef,
     status,
+    historyMode,
     reconnect,
     sendText,
+    historyPage,
+    scrollToLive,
     paste,
     pasteConfirmation,
     confirmPaste,

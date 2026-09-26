@@ -5,12 +5,14 @@ export type ClientControlMessage =
   | { type: "init"; cols?: number; rows?: number }
   | { type: "resize"; cols?: number; rows?: number }
   | { type: "scroll"; lines?: number }
+  | { type: "scroll-bottom" }
   | { type: "ping" };
 
 export type ServerControlMessage =
   | { type: "taken-over" }
   | { type: "ended" }
-  | { type: "pong" };
+  | { type: "pong" }
+  | { type: "copy-mode"; active: boolean };
 
 export function parseControlMessage(data: Buffer): ClientControlMessage | null {
   try {
@@ -19,6 +21,7 @@ export function parseControlMessage(data: Buffer): ClientControlMessage | null {
       parsed.type === "init" ||
       parsed.type === "resize" ||
       parsed.type === "scroll" ||
+      parsed.type === "scroll-bottom" ||
       parsed.type === "ping"
     ) {
       return parsed as ClientControlMessage;
@@ -50,6 +53,10 @@ export function clampSize(value: number | undefined, fallback: number): number {
 
 export interface WireOptions {
   onScroll?: (lines: number) => void;
+  /** Receives binary keystrokes; defaults to writing straight to the PTY. */
+  onInput?: (data: Buffer) => void;
+  /** "Jump to bottom": exit copy-mode if active. */
+  onBottom?: () => void;
 }
 
 /**
@@ -62,6 +69,7 @@ export function wirePtyToSocket(
   onEnd: () => void,
   options: WireOptions = {},
 ): void {
+  const writeInput = options.onInput ?? ((data: Buffer) => pty.write(data));
   pty.onData((data) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(data, { binary: true });
@@ -73,7 +81,7 @@ export function wirePtyToSocket(
   });
   ws.on("message", (data: Buffer, isBinary: boolean) => {
     if (isBinary) {
-      pty.write(data);
+      writeInput(data);
       return;
     }
     const message = parseControlMessage(data);
@@ -87,6 +95,8 @@ export function wirePtyToSocket(
     } else if (message.type === "scroll") {
       const lines = clampLines(message.lines);
       if (lines !== 0) options.onScroll?.(lines);
+    } else if (message.type === "scroll-bottom") {
+      options.onBottom?.();
     } else if (message.type === "ping") {
       sendControl(ws, { type: "pong" });
     }

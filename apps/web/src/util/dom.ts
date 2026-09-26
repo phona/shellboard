@@ -7,6 +7,9 @@ export const KEYBINDINGS = {
   terminalCopy: "Ctrl+c",
   terminalPaste: "Ctrl+v",
   terminalPasteShift: "Ctrl+Shift+v",
+  terminalBottom: "Ctrl+End",
+  terminalPageUp: "Shift+PageUp",
+  terminalPageDown: "Shift+PageDown",
 } as const;
 
 export function matchesBinding(event: KeyboardEvent, binding: string): boolean {

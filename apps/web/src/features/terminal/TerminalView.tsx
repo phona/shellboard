@@ -49,6 +49,9 @@ export function TerminalView({
       ? "session exited"
       : STATUS_BANNER[terminal.status];
 
+  const showHistoryBar =
+    variant === "agent" && terminal.historyMode && !banner && terminal.status === "connected";
+
   return (
     <div className={fullscreen ? "terminal-view fullscreen" : "terminal-view"}>
       <div className="terminal-head">
@@ -99,8 +102,8 @@ export function TerminalView({
             <button
               type="button"
               className="icon-btn"
-              title="History (tmux copy-mode)"
-              onClick={() => terminal.sendText("\x02[")}
+              title="History (one page up)"
+              onClick={terminal.historyPage}
             >
               ⇲
             </button>
@@ -176,6 +179,20 @@ export function TerminalView({
             </button>
           </div>
         </Modal>
+      )}
+
+      {showHistoryBar && (
+        <div className="terminal-banner history">
+          <span>HISTORY — typing returns to live</span>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={terminal.scrollToLive}
+            title="Jump to bottom (Ctrl+End)"
+          >
+            ↓ live
+          </button>
+        </div>
       )}
 
       {banner && (

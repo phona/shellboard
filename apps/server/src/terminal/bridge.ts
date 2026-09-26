@@ -9,6 +9,11 @@ import { sendControl, wirePtyToSocket } from "./wire.js";
 interface AttachedClient {
   ws: WebSocket;
   pty: nodePty.IPty;
+  /** Our scroll channel put the pane into tmux copy-mode. */
+  copyMode: boolean;
+  /** Keystrokes buffered while copy-mode is being cancelled. */
+  pendingInput: Buffer[];
+  draining: boolean;
 }
 
 /**
@@ -53,9 +58,49 @@ export class TerminalBridge {
         env: processEnv(),
       },
     );
-    const client: AttachedClient = { ws, pty };
+    const client: AttachedClient = { ws, pty, copyMode: false, pendingInput: [], draining: false };
     this.clients.set(session.id, client);
     this.tracker.setAttached(session.id, true);
+
+    const setCopyMode = (active: boolean): void => {
+      if (client.copyMode === active) return;
+      client.copyMode = active;
+      sendControl(ws, { type: "copy-mode", active });
+    };
+
+    /**
+     * Keystrokes while in copy-mode would be eaten by it (search keys, not
+     * the shell). VS Code semantics instead: any input returns to the live
+     * view — cancel copy-mode first, then forward the buffered bytes.
+     */
+    const pumpInput = (): void => {
+      if (client.draining) return;
+      client.draining = true;
+      void (async () => {
+        for (;;) {
+          if (client.pendingInput.length === 0) {
+            client.draining = false;
+            return;
+          }
+          if (client.copyMode) {
+            await this.tmux.cancelCopyMode(session.tmuxName);
+            setCopyMode(false);
+          }
+          for (const chunk of client.pendingInput.splice(0)) {
+            pty.write(chunk);
+          }
+        }
+      })();
+    };
+
+    const handleInput = (data: Buffer): void => {
+      if (!client.copyMode) {
+        pty.write(data);
+        return;
+      }
+      client.pendingInput.push(data);
+      pumpInput();
+    };
 
     let ended = false;
     wirePtyToSocket(
@@ -68,7 +113,18 @@ export class TerminalBridge {
           this.tracker.setAttached(session.id, false);
         }
       },
-      { onScroll: (lines) => this.tmux.scroll(session.tmuxName, lines) },
+      {
+        onScroll: (lines) => {
+          if (lines > 0) setCopyMode(true);
+          this.tmux.scroll(session.tmuxName, lines);
+        },
+        onInput: handleInput,
+        onBottom: () => {
+          if (!client.copyMode) return;
+          client.pendingInput.push(Buffer.alloc(0)); // flush sentinel
+          pumpInput();
+        },
+      },
     );
     ws.on("close", () => {
       // If the socket dropped without the PTY exiting, clean up here.
