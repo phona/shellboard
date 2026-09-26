@@ -1,10 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { AGENT_PRESETS } from "@shellboard/contracts";
 import type { AgentType, Project } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { useUi } from "../../state/store";
+import { basenamePosix } from "../../util/dom";
 
 export function CreateSessionDialog({
   project,
@@ -14,12 +15,38 @@ export function CreateSessionDialog({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: api.sessions.list });
   const [name, setName] = useState("");
   const [agentType, setAgentType] = useState<AgentType>("codex");
   const [cwd, setCwd] = useState("");
   const [command, setCommand] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /**
+   * Auto-naming: a custom cwd (worktree) names the session after its
+   * directory; otherwise the agent id, numbered when taken. The name field
+   * previews it and wins when the user types one.
+   */
+  function generatedName(): string {
+    const cwdBase = cwd.trim()
+      ? basenamePosix(cwd.trim().replace(/\/+$/, ""))
+      : "";
+    const agentBase =
+      agentType === "custom"
+        ? (command.trim().split(/\s+/)[0] ?? "").toLowerCase()
+        : agentType;
+    const base = cwdBase || agentBase || "session";
+    const taken = new Set(
+      (sessionsQuery.data?.sessions ?? [])
+        .filter((item) => item.session.projectId === project.id)
+        .map((item) => item.session.name),
+    );
+    if (!taken.has(base)) return base;
+    let n = 2;
+    while (taken.has(`${base}-${n}`)) n++;
+    return `${base}-${n}`;
+  }
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -28,7 +55,7 @@ export function CreateSessionDialog({
     try {
       const created = await api.sessions.create({
         projectId: project.id,
-        name: name || `${project.name}-session`,
+        name: name.trim() || generatedName(),
         cwd: cwd || undefined,
         agentType,
         command: agentType === "custom" ? command : undefined,
@@ -60,10 +87,9 @@ export function CreateSessionDialog({
         <label>
           Name
           <input
-            autoFocus
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder={`${project.name}-1`}
+            placeholder={generatedName()}
           />
         </label>
         <label>
