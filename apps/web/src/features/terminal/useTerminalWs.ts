@@ -6,6 +6,7 @@ import { Terminal } from "@xterm/xterm";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { readTerminalTheme, subscribeTheme } from "../../state/theme";
 import { useUi } from "../../state/store";
+import { toast } from "../../state/toasts";
 import { wsUrl } from "../../api/client";
 
 export type TerminalStatus =
@@ -99,16 +100,27 @@ export function useTerminalWs(path: string): TerminalApi {
       if (!payload) return true; // clipboard clear request
       try {
         const bytes = Uint8Array.from(atob(payload), (ch) => ch.charCodeAt(0));
-        void navigator.clipboard
-          .writeText(new TextDecoder().decode(bytes))
-          .catch(() => {
-            // clipboard permission denied
-          });
+        const text = new TextDecoder().decode(bytes);
+        void navigator.clipboard.writeText(text).catch(() => {
+          toast("Copy blocked by the browser — use Shift+drag, then Ctrl+C", "error");
+        });
         return true;
       } catch {
         return false;
       }
     });
+
+    // Desktop-style selection: releasing a native (Shift+drag) selection
+    // copies it, like an editor with copy-on-select.
+    const onMouseUp = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      const selection = term.getSelection();
+      if (!selection) return;
+      void navigator.clipboard.writeText(selection).catch(() => {
+        toast("Copy blocked by the browser — press Ctrl+C instead", "error");
+      });
+    };
+    container.addEventListener("mouseup", onMouseUp, true);
 
     // Right-click = paste (PuTTY style). tmux's own right-click menu is
     // unbound server-side; capture phase wins over xterm's mouse handling.
@@ -211,6 +223,7 @@ export function useTerminalWs(path: string): TerminalApi {
       disposed = true;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       container.removeEventListener("contextmenu", contextMenu, true);
+      container.removeEventListener("mouseup", onMouseUp, true);
       observer.disconnect();
       unsubscribeTheme();
       wsRef.current?.close();

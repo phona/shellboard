@@ -86,6 +86,20 @@ export class TmuxService {
     await execa("tmux", this.args("set-option", "-t", name, "monitor-activity", "on"));
     await execa("tmux", this.args("set-option", "-t", name, "mouse", "on"));
     await execa("tmux", this.args("set-option", "-t", name, "set-clipboard", "on"));
+    // Many distros ship xterm-256color terminfo without the Ms (set
+    // clipboard) capability, which silently disables set-clipboard — tmux
+    // never emits OSC 52 and drag-selection never reaches the browser
+    // clipboard. Assert it explicitly.
+    await execa(
+      "tmux",
+      this.args(
+        "set-option",
+        "-t",
+        name,
+        "terminal-overrides",
+        "xterm*:Ms=\\E]52;%p1%s;%p2%s\\007",
+      ),
+    );
     // tmux ≥ 3.4 binds right-click to its own popup menu; the browser layer
     // owns right-click (paste). Key bindings are server-global, but this
     // socket is ours alone (D2).

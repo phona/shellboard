@@ -91,6 +91,26 @@ it("takes over an existing client instead of sharing the PTY (D4)", async () => 
   await services.sessions.kill(session.id);
 });
 
+it("pushes OSC 52 to the outer terminal when a drag selection is copied", async () => {
+  const { services, session } = await createBashSession();
+  const ws = new FakeWS();
+  services.bridge.attach(ws.asWebSocket(), session);
+  await waitFor(() => ws.output().length > 0);
+  await waitFor(() => ws.output().includes("1002"), 10000);
+
+  // SGR mouse: left press, drag with button held, release. Small gaps so
+  // tmux processes each event.
+  ws.emitMessage(Buffer.from("\x1b[<0;10;3M"), true);
+  await sleep(200);
+  ws.emitMessage(Buffer.from("\x1b[<32;30;6M"), true);
+  await sleep(200);
+  ws.emitMessage(Buffer.from("\x1b[<0;30;6m"), true);
+
+  await waitFor(() => ws.output().includes("]52;"), 10000);
+  ws.close();
+  await services.sessions.kill(session.id);
+});
+
 it("forwards keystrokes through to the running shell", async () => {
   const { services, session } = await createBashSession();
   const ws = new FakeWS();
