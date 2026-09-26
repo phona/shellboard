@@ -18,12 +18,16 @@ export class TmuxService {
   }
 
   async listSessions(): Promise<Map<string, TmuxSessionInfo>> {
+    // window_activity, not session_activity: the session stamp is frozen at
+    // creation for single-window sessions (its alert pipeline ignores the
+    // active window), while window_activity ticks with every pane output.
+    // Both are absolute epoch seconds, converted to age here.
     const result = await execa(
       "tmux",
       this.args(
         "list-sessions",
         "-F",
-        "#{session_name}|#{session_activity}|#{session_attached}",
+        "#{session_name}|#{window_activity}|#{session_attached}",
       ),
       { reject: false },
     );
@@ -33,11 +37,13 @@ export class TmuxService {
       const parts = line.split("|");
       const name = parts[0];
       if (!name) continue;
-      const activity = Number(parts[1]);
+      const raw = Number(parts[1]);
       const attached = Number(parts[2]);
       map.set(name, {
         name,
-        activitySeconds: Number.isFinite(activity) ? activity : null,
+        activitySeconds: Number.isFinite(raw)
+          ? Math.max(0, Date.now() / 1000 - raw)
+          : null,
         attached: Number.isFinite(attached) ? attached : 0,
       });
     }

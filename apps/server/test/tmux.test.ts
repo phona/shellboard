@@ -15,7 +15,11 @@ describe("TmuxService (real tmux on dedicated socket)", () => {
 
     const list = await services.tmux.listSessions();
     expect(list.has(name)).toBe(true);
-    expect(list.get(name)?.activitySeconds).not.toBeNull();
+    // window_activity is epoch seconds, converted to age by the service —
+    // a just-created session must read as freshly active, not idle
+    const age = list.get(name)?.activitySeconds;
+    expect(age).not.toBeNull();
+    expect(age).toBeLessThan(60);
 
     await services.tmux.killSession(name);
     expect(await services.tmux.sessionExists(name)).toBe(false);
