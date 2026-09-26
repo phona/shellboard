@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getThemeMode, setThemeMode, type ThemeMode } from "../state/theme";
+import { useCommands } from "../state/commands";
 import { useUi } from "../state/store";
 
 export function SettingsPopover() {
@@ -90,8 +91,65 @@ export function SettingsPopover() {
               }
             />
           </label>
+          <CommandRegistry />
         </div>
       )}
+    </div>
+  );
+}
+
+/** Register launch commands once, pick them from the new-session dialog. */
+function CommandRegistry() {
+  const commands = useCommands((state) => state.commands);
+  const remove = useCommands((state) => state.remove);
+  const [name, setName] = useState("");
+  const [command, setCommand] = useState("");
+
+  return (
+    <div className="command-registry">
+      <div className="popover-title">Registered commands</div>
+      {commands.map((item) => (
+        <div className="command-row" key={item.name}>
+          <span className="command-name" title={item.command}>
+            {item.name}
+          </span>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label={`Remove ${item.name}`}
+            onClick={() => remove(item.name)}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <form
+        className="command-add"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const cmd = command.trim();
+          if (!cmd) return;
+          const fallback = cmd.split(/\s+/)[0]?.toLowerCase() ?? "command";
+          useCommands.getState().add(name.trim() || fallback, cmd);
+          setName("");
+          setCommand("");
+        }}
+      >
+        <input
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="name (optional)"
+        />
+        <input
+          value={command}
+          onChange={(event) => setCommand(event.target.value)}
+          placeholder="command to run"
+          required
+        />
+        <button type="submit" className="btn">
+          Add
+        </button>
+      </form>
     </div>
   );
 }

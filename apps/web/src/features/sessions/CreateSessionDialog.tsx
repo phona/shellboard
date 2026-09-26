@@ -4,6 +4,7 @@ import { AGENT_PRESETS } from "@shellboard/contracts";
 import type { AgentType, Project } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { Modal } from "../../components/Modal";
+import { useCommands } from "../../state/commands";
 import { useUi } from "../../state/store";
 import { codename } from "../../util/codename";
 
@@ -16,6 +17,7 @@ export function CreateSessionDialog({
 }) {
   const queryClient = useQueryClient();
   const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: api.sessions.list });
+  const registeredCommands = useCommands((state) => state.commands);
   const [name, setName] = useState("");
   const [agentType, setAgentType] = useState<AgentType>("codex");
   const [cwd, setCwd] = useState("");
@@ -73,6 +75,30 @@ export function CreateSessionDialog({
             </div>
           ))}
         </div>
+        {registeredCommands.length > 0 && (
+          <>
+            <div className="dialog-section">Your commands</div>
+            <div className="preset-grid">
+              {registeredCommands.map((item) => (
+                <div
+                  key={item.name}
+                  className={
+                    agentType === "custom" && command === item.command
+                      ? "preset selected"
+                      : "preset"
+                  }
+                  title={item.command}
+                  onClick={() => {
+                    setAgentType("custom");
+                    setCommand(item.command);
+                  }}
+                >
+                  {item.name}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
         <label>
           Name
           <input
