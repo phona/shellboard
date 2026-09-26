@@ -46,6 +46,9 @@ export interface TerminalTheme {
   cursor: string;
   cursorAccent: string;
   selectionBackground: string;
+  /** All search matches and the active one (overview ruler uses them too). */
+  searchMatch: string;
+  searchActive: string;
 }
 
 export function readTerminalTheme(): TerminalTheme {
@@ -58,5 +61,7 @@ export function readTerminalTheme(): TerminalTheme {
     cursor: read("--term-cursor", "#e6edf3"),
     cursorAccent: read("--term-bg", "#0d1117"),
     selectionBackground: read("--term-selection", "rgba(9, 105, 218, 0.35)"),
+    searchMatch: read("--term-search-match", "rgba(154, 103, 0, 0.28)"),
+    searchActive: read("--term-search-active", "rgba(9, 105, 218, 0.42)"),
   };
 }

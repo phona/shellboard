@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { SessionWithRuntime } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
+import { Modal } from "../../components/Modal";
 import { toast } from "../../state/toasts";
 import { useUi } from "../../state/store";
 import type { TerminalStatus } from "./useTerminalWs";
@@ -158,6 +159,24 @@ export function TerminalView({
       )}
 
       <div className="terminal-host" ref={terminal.containerRef} />
+
+      {terminal.pasteConfirmation && (
+        <Modal title="Paste multi-line text" onClose={terminal.cancelPaste}>
+          <div>
+            The clipboard contains <strong>{terminal.pasteConfirmation.lines} lines</strong>.
+            Pasting feeds them to the terminal line by line — each line may execute. Review
+            the content before confirming.
+          </div>
+          <div className="modal-actions">
+            <button type="button" onClick={terminal.cancelPaste}>
+              Cancel
+            </button>
+            <button type="button" className="btn primary" onClick={terminal.confirmPaste}>
+              Paste
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {banner && (
         <div className={`terminal-banner ${exited ? "ended" : terminal.status}`}>

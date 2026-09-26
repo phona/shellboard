@@ -1,7 +1,8 @@
 import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
+import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { readTerminalTheme, subscribeTheme } from "../../state/theme";
@@ -23,6 +24,10 @@ export interface TerminalApi {
   reconnect(): void;
   sendText(text: string): void;
   paste(): void;
+  /** Multi-line paste gate: set before anything containing newlines runs. */
+  pasteConfirmation: { lines: number } | null;
+  confirmPaste(): void;
+  cancelPaste(): void;
   copySelection(): void;
   fit(): void;
   searchOpen: boolean;
@@ -39,10 +44,13 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
+  const searchOptionsRef = useRef<ISearchOptions | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const encoderRef = useRef(new TextEncoder());
   const [status, setStatus] = useState<TerminalStatus>("connecting");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [pasteConfirmation, setPasteConfirmation] = useState<{ lines: number } | null>(null);
+  const pendingPasteRef = useRef<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const fontSize = useUi((state) => state.fontSize);
   const scrollback = useUi((state) => state.scrollback);
@@ -71,18 +79,30 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     let reconnectTimer: number | null = null;
     let remoteEnded = false;
 
+    const termTheme = readTerminalTheme();
     const term = new Terminal({
       cursorBlink: true,
       fontSize,
       fontFamily: FONT_FAMILY,
       scrollback,
-      theme: readTerminalTheme(),
+      theme: termTheme,
+      // Alt+click moves the readline cursor via arrow keys (no shell
+      // integration needed) — a VS Code terminal affordance
+      altClickMovesCursor: true,
       // Unicode11Addon relies on the proposed unicode API
       allowProposedApi: true,
     });
     termRef.current = term;
     const fitAddon = new FitAddon();
     fitRef.current = fitAddon;
+    const searchTheme = {
+      matchBackground: termTheme.searchMatch,
+      matchOverviewRuler: termTheme.searchMatch,
+      activeMatchBackground: termTheme.searchActive,
+      activeMatchColorOverviewRuler: termTheme.searchActive,
+    };
+    const searchOptions = { decorations: searchTheme };
+    searchOptionsRef.current = searchOptions;
     const searchAddon = new SearchAddon();
     searchRef.current = searchAddon;
     term.loadAddon(fitAddon);
@@ -91,6 +111,15 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
     term.open(container);
+    // GPU renderer (the VS Code smoothness default); fall back to the DOM
+    // renderer when WebGL is unavailable or the context dies.
+    try {
+      const webgl = new WebglAddon();
+      term.loadAddon(webgl);
+      webgl.onContextLoss(() => webgl.dispose());
+    } catch {
+      // no WebGL in this browser — DOM renderer it is
+    }
 
     // Desktop-style selection by default: swallow mouse-reporting modes
     // (DECSET 1000/1002/1003/1006/1015) and alternate scroll (1007), so
@@ -102,8 +131,11 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
       );
     const swallowMouse = (params: (number | number[])[]): boolean =>
       params.length > 0 && params.every(isMouseMode);
-    term.parser.registerCsiHandler({ final: "h", intermediates: "?" }, swallowMouse);
-    term.parser.registerCsiHandler({ final: "l", intermediates: "?" }, swallowMouse);
+    // "?" in DECSET/DECRST (CSI ? Ps h / CSI ? Ps l) is the private-parameter
+    // prefix (0x3c..0x3f), not an intermediate (0x20..0x2f) — passing it as
+    // `intermediates` makes xterm throw at registration.
+    term.parser.registerCsiHandler({ prefix: "?", final: "h" }, swallowMouse);
+    term.parser.registerCsiHandler({ prefix: "?", final: "l" }, swallowMouse);
 
     // Wheel: tmux owns the scrollback, so forward scroll intents to the
     // server (it drives tmux copy-mode). Accumulated and throttled.
@@ -161,17 +193,30 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     };
     container.addEventListener("mouseup", onMouseUp, true);
 
+    // Paste gate (VS Code-style): multi-line clipboard content is executed
+    // line by line by the shell, so it needs explicit confirmation.
+    const gatePaste = (text: string): void => {
+      if (!text) return;
+      if (!text.includes("\n")) {
+        term.paste(text);
+        return;
+      }
+      pendingPasteRef.current = text;
+      setPasteConfirmation({ lines: text.split("\n").length });
+    };
+    const readAndGate = (): void => {
+      void navigator.clipboard
+        .readText()
+        .then(gatePaste)
+        .catch(() => {
+          toast("Paste blocked by the browser — allow clipboard access for this site", "error");
+        });
+    };
+
     // Right-click = paste (PuTTY style). Capture phase wins over xterm.
     const contextMenu = (event: MouseEvent) => {
       event.preventDefault();
-      void navigator.clipboard
-        .readText()
-        .then((text) => {
-          if (text) term.paste(text);
-        })
-        .catch(() => {
-          // clipboard permission denied
-        });
+      readAndGate();
     };
     container.addEventListener("contextmenu", contextMenu, true);
 
@@ -194,14 +239,7 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
         matchesBinding(event, KEYBINDINGS.terminalPaste) ||
         matchesBinding(event, KEYBINDINGS.terminalPasteShift)
       ) {
-        void navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text) term.paste(text);
-          })
-          .catch(() => {
-            toast("Paste blocked by the browser — use the paste button", "error");
-          });
+        readAndGate();
         return false;
       }
       return true;
@@ -308,12 +346,32 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   }, []);
 
   const paste = useCallback(() => {
-    navigator.clipboard
+    void navigator.clipboard
       .readText()
-      .then((text) => termRef.current?.paste(text))
+      .then((text) => {
+        if (!text) return;
+        if (!text.includes("\n")) {
+          termRef.current?.paste(text);
+          return;
+        }
+        pendingPasteRef.current = text;
+        setPasteConfirmation({ lines: text.split("\n").length });
+      })
       .catch(() => {
         // clipboard permission denied
       });
+  }, []);
+
+  const confirmPaste = useCallback(() => {
+    const text = pendingPasteRef.current;
+    pendingPasteRef.current = null;
+    setPasteConfirmation(null);
+    if (text) termRef.current?.paste(text);
+  }, []);
+
+  const cancelPaste = useCallback(() => {
+    pendingPasteRef.current = null;
+    setPasteConfirmation(null);
   }, []);
 
   const copySelection = useCallback(() => {
@@ -330,12 +388,12 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   const findNext = useCallback((term?: string) => {
     const search = searchRef.current;
     if (!search || term === undefined || term.length === 0) return;
-    search.findNext(term);
+    search.findNext(term, searchOptionsRef.current ?? undefined);
   }, []);
   const findPrevious = useCallback((term?: string) => {
     const search = searchRef.current;
     if (!search || term === undefined || term.length === 0) return;
-    search.findPrevious(term);
+    search.findPrevious(term, searchOptionsRef.current ?? undefined);
   }, []);
 
   return {
@@ -344,6 +402,9 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     reconnect,
     sendText,
     paste,
+    pasteConfirmation,
+    confirmPaste,
+    cancelPaste,
     copySelection,
     fit,
     searchOpen,

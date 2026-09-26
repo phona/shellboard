@@ -18,8 +18,12 @@
   --term-fg: #1f2328;
   --term-cursor: #1f2328;
   --term-selection: rgba(9, 105, 218, 0.28);
+  --term-search-match: rgba(154, 103, 0, 0.28);
+  --term-search-active: rgba(9, 105, 218, 0.42);
   --shadow: 0 8px 24px rgba(140, 152, 164, 0.25);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --topbar-h: 42px;
+  --statusbar-h: 26px;
 }
 
 [data-theme="dark"] {
@@ -42,6 +46,8 @@
   --term-fg: #e6edf3;
   --term-cursor: #e6edf3;
   --term-selection: rgba(47, 129, 247, 0.35);
+  --term-search-match: rgba(210, 153, 34, 0.30);
+  --term-search-active: rgba(47, 129, 247, 0.48);
   --shadow: 0 8px 24px rgba(1, 4, 9, 0.6);
 }
 
@@ -127,7 +133,7 @@ button:focus-visible {
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 42px;
+  height: var(--topbar-h);
   padding: 0 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -190,6 +196,28 @@ button:focus-visible {
   background: var(--accent);
 }
 
+/* Slim restore tab shown when a side panel is collapsed. The collapsed
+   panel state is persisted, so this must always be reachable — it is the
+   only visible recovery path alongside the panel keybinding. */
+.panel-reopen {
+  flex: none;
+  align-self: stretch;
+  width: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.panel-reopen:hover {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
 .center {
   flex: 1;
   min-width: 0;
@@ -205,6 +233,20 @@ button:focus-visible {
   min-width: 0;
   background: var(--surface);
   border-left: 1px solid var(--border);
+}
+
+/* Transient review surface: the tool panel floats over the whole main area
+   (topbar/statusbar stay). The agent terminal underneath stays mounted and
+   keeps its exact size, so the tmux pane never reflows. Z-order sits between
+   terminal fullscreen (80) and modals (100). */
+.toolview.maximized {
+  position: fixed;
+  top: var(--topbar-h);
+  bottom: var(--statusbar-h);
+  left: 0;
+  right: 0;
+  z-index: 90;
+  border-left: none;
 }
 
 /* ---------- sidebar ---------- */
@@ -244,6 +286,11 @@ button:focus-visible {
   background: var(--surface-hover);
 }
 
+.project-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .project-head .chevron {
   color: var(--text-muted);
   transition: transform 0.12s;
@@ -261,7 +308,14 @@ button:focus-visible {
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  width: 100%;
   padding: 5px 10px 5px 26px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
@@ -274,6 +328,7 @@ button:focus-visible {
 }
 
 .session-item .name {
+  display: block;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -281,6 +336,7 @@ button:focus-visible {
 }
 
 .session-item .meta {
+  display: block;
   font-size: 11px;
   color: var(--text-muted);
   overflow: hidden;
@@ -341,6 +397,16 @@ button:focus-visible {
   color: var(--danger);
   font-size: 14px;
   font-weight: 700;
+}
+
+/* Motion sensitivity: the only animation in the app is the activity pulse.
+   With it off, working (filled) vs cooling (faded) vs idle (outline) still
+   read from fill and shape alone. */
+@media (prefers-reduced-motion: reduce) {
+  .act-dot.working,
+  .act-dot.cooling {
+    animation: none;
+  }
 }
 
 .sidebar-empty {
@@ -702,6 +768,20 @@ button:focus-visible {
 }
 
 .diff-view {
+  /* react-diff-view theming hooks (see react-diff-view/style/index.css);
+     colors derive from the palette tokens so both themes stay in sync */
+  --diff-font-family: var(--mono);
+  --diff-text-color: var(--text);
+  --diff-background-color: var(--surface);
+  --diff-selection-background-color: var(--term-selection);
+  --diff-selection-text-color: var(--text);
+  --diff-gutter-insert-background-color: color-mix(in srgb, var(--working) 24%, transparent);
+  --diff-code-insert-background-color: color-mix(in srgb, var(--working) 14%, transparent);
+  --diff-gutter-delete-background-color: color-mix(in srgb, var(--danger) 24%, transparent);
+  --diff-code-delete-background-color: color-mix(in srgb, var(--danger) 14%, transparent);
+  --diff-gutter-selected-background-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  --diff-code-selected-background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  --diff-omit-gutter-line-color: var(--danger);
   font-family: var(--mono);
   font-size: 12px;
   border: 1px solid var(--border);
@@ -711,29 +791,6 @@ button:focus-visible {
 
 .diff-view .diff-gutter {
   color: var(--text-muted);
-  padding: 0 6px;
-  user-select: none;
-  min-width: 30px;
-}
-
-.diff-view td {
-  border: none;
-}
-
-.diff-add-gutter {
-  background: rgba(63, 185, 80, 0.18);
-}
-
-.diff-add-line {
-  background: rgba(63, 185, 80, 0.12);
-}
-
-.diff-del-gutter {
-  background: rgba(248, 81, 73, 0.18);
-}
-
-.diff-del-line {
-  background: rgba(248, 81, 73, 0.12);
 }
 
 /* ---------- files panel ---------- */
@@ -873,7 +930,7 @@ button:focus-visible {
   display: flex;
   align-items: center;
   gap: 16px;
-  height: 26px;
+  height: var(--statusbar-h);
   padding: 0 12px;
   font-size: 11px;
   color: var(--text-muted);
