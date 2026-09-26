@@ -115,6 +115,21 @@ export const FileListSchema = z.object({
 });
 export type FileList = z.infer<typeof FileListSchema>;
 
+/** One file in the session's upload buffer (~/.shellboard/uploads/<sid>/). */
+export const UploadEntrySchema = z.object({
+  name: z.string(),
+  /** Absolute server-side path — what "Send to terminal" types into the shell. */
+  path: z.string(),
+  size: z.number(),
+  mtime: z.number(),
+});
+export type UploadEntry = z.infer<typeof UploadEntrySchema>;
+
+export const UploadListSchema = z.object({
+  entries: z.array(UploadEntrySchema),
+});
+export type UploadList = z.infer<typeof UploadListSchema>;
+
 export const FileContentSchema = z.object({
   path: z.string(),
   content: z.string(),
@@ -194,6 +209,22 @@ export type CreateFileInput = z.infer<typeof CreateFileInputSchema>;
 export const RenameFileInputSchema = z.object({
   path: z.string().min(1),
   newName: z.string().min(1),
+});
+
+export const SendUploadInputSchema = z.object({
+  name: z.string().min(1),
+});
+export type SendUploadInput = z.infer<typeof SendUploadInputSchema>;
+
+/** Binary upload into the session's upload buffer: ?name=<filename> */
+export const UploadQuerySchema = z.object({
+  name: z.string().min(1),
+});
+
+/** Binary upload into a directory inside the session cwd: ?path=<dir>&name= */
+export const UploadToDirQuerySchema = z.object({
+  path: z.string().min(1),
+  name: z.string().min(1),
 });
 
 export const AuthLoginInputSchema = z.object({
