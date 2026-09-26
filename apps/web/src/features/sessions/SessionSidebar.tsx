@@ -33,6 +33,9 @@ function SessionBranch({ sessionId }: { sessionId: string }) {
     queryFn: () => api.git.status(sessionId),
     staleTime: 60_000,
     retry: 0,
+    // One git subprocess per session row per focus adds up; the 60s staleTime
+    // already bounds freshness, and mutations invalidate explicitly.
+    refetchOnWindowFocus: false,
   });
   return <>{query.data?.branch ?? "—"}</>;
 }

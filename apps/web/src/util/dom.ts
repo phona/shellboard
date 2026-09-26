@@ -1,3 +1,5 @@
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+
 export const KEYBINDINGS = {
   search: "/",
   toggleLeft: "Ctrl+b",
@@ -50,5 +52,27 @@ export function basenamePosix(path: string): string {
 
 export function dirnamePosix(path: string): string {
   const index = path.lastIndexOf("/");
-  return index === -1 ? "" : path.slice(index + 1);
+  return index === -1 ? "" : path.slice(0, index);
+}
+
+/**
+ * Props that turn a clickable list row into a keyboard-activatable button.
+ * The target guard keeps Enter/Space pressed on a nested action button from
+ * also activating the row.
+ */
+export function rowActivator(onActivate: () => void): {
+  role: "button";
+  tabIndex: 0;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
+} {
+  return {
+    role: "button",
+    tabIndex: 0,
+    onKeyDown: (event) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      onActivate();
+    },
+  };
 }

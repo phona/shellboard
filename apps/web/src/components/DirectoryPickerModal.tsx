@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ApiError, api } from "../api/client";
+import { rowActivator } from "../util/dom";
 import { Modal } from "./Modal";
 
 /**
@@ -45,13 +46,18 @@ export function DirectoryPickerModal({
           </div>
         )}
         {parent && (
-          <div className="tree-row" onClick={() => setPath(parent)}>
+          <div className="tree-row" onClick={() => setPath(parent)} {...rowActivator(() => setPath(parent))}>
             <span className="icon">↑</span>
             <span>..</span>
           </div>
         )}
         {entries.map((entry) => (
-          <div key={entry.path} className="tree-row" onClick={() => setPath(entry.path)}>
+          <div
+            key={entry.path}
+            className="tree-row"
+            onClick={() => setPath(entry.path)}
+            {...rowActivator(() => setPath(entry.path))}
+          >
             <span className="icon" style={{ color: "var(--accent)" }}>
               ▸
             </span>

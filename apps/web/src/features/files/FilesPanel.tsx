@@ -7,7 +7,7 @@ import { IconCopy } from "../../components/icons";
 import { FileEditor } from "./FileEditor";
 import { toast } from "../../state/toasts";
 import { useUploads } from "../../state/uploads";
-import { joinPosix, parentPosix } from "../../util/dom";
+import { joinPosix, parentPosix, rowActivator } from "../../util/dom";
 import { formatSize } from "../../util/format";
 
 const ICONS: Record<FileEntry["type"], string> = {
@@ -168,13 +168,13 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
         </div>
         <span style={{ flex: 1 }} />
         <button type="button" title="New file" onClick={() => { setPrompt({ kind: "file" }); setPromptValue(""); }}>
-          + file
+          + File
         </button>
         <button type="button" title="New folder" onClick={() => { setPrompt({ kind: "dir" }); setPromptValue(""); }}>
-          + dir
+          + Dir
         </button>
         <button type="button" title="Upload into this directory" onClick={() => uploadRef.current?.click()}>
-          ↑ file
+          ↑ File
         </button>
         <input
           ref={uploadRef}
@@ -221,7 +221,7 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
               title="Upload image into the buffer (never the repo)"
               onClick={() => laneInputRef.current?.click()}
             >
-              ↑ img
+              ↑ Img
             </button>
           </div>
           {(uploads.data?.entries ?? []).map((entry) => (
@@ -272,6 +272,11 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
               else if (entry.type === "file") setEditing(entry.path);
               else if (entry.type === "symlink") toast("symlink — not opened");
             }}
+            {...rowActivator(() => {
+              if (entry.type === "dir") setDir(entry.path);
+              else if (entry.type === "file") setEditing(entry.path);
+              else if (entry.type === "symlink") toast("symlink — not opened");
+            })}
           >
             <span className="icon" style={{ color: entry.type === "dir" ? "var(--accent)" : "var(--text-muted)" }}>
               {ICONS[entry.type]}
@@ -279,13 +284,15 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
             <span>{entry.name}</span>
             <span className="size">{entry.type === "dir" ? "" : formatSize(entry.size)}</span>
             <span className="row-actions">
-              <a
-                href={api.files.downloadUrl(id, entry.path)}
-                title="Download"
-                onClick={(event) => event.stopPropagation()}
-              >
-                ↓
-              </a>
+              {entry.type !== "dir" && (
+                <a
+                  href={api.files.downloadUrl(id, entry.path)}
+                  title="Download"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  ↓
+                </a>
+              )}
               <button
                 type="button"
                 title="Rename"

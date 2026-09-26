@@ -114,10 +114,10 @@ export function FileEditor({
         <span style={{ flex: 1 }} />
         {dirty && <span className="muted">unsaved</span>}
         <button type="button" onClick={guard(() => void reload())}>
-          reload
+          Reload
         </button>
         <button type="button" onClick={download}>
-          download
+          Download
         </button>
         <button
           type="button"

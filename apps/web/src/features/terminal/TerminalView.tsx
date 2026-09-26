@@ -123,6 +123,7 @@ export function TerminalView({
                 type="button"
                 className="icon-btn"
                 title="Search (Ctrl+F)"
+                aria-label="Search in terminal"
                 onClick={() => terminal.setSearchOpen(!terminal.searchOpen)}
               >
                 <IconSearch />
@@ -131,6 +132,7 @@ export function TerminalView({
                 type="button"
                 className="icon-btn"
                 title="Smaller font"
+                aria-label="Smaller font"
                 onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize - 1)}
               >
                 <IconFontMinus />
@@ -139,6 +141,7 @@ export function TerminalView({
                 type="button"
                 className="icon-btn"
                 title="Larger font"
+                aria-label="Larger font"
                 onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize + 1)}
               >
                 <IconFontPlus />
@@ -147,11 +150,18 @@ export function TerminalView({
                 type="button"
                 className="icon-btn"
                 title="Copy selection (drag to select)"
+                aria-label="Copy selection"
                 onClick={terminal.copySelection}
               >
                 <IconCopy />
               </button>
-              <button type="button" className="icon-btn" title="Paste" onClick={terminal.paste}>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Paste"
+                aria-label="Paste"
+                onClick={terminal.paste}
+              >
                 <IconPaste />
               </button>
               {variant === "agent" && (
@@ -159,6 +169,7 @@ export function TerminalView({
                   type="button"
                   className="icon-btn"
                   title="History (one page up)"
+                  aria-label="History: one page up"
                   onClick={terminal.historyPage}
                 >
                   <IconHistory />
@@ -168,6 +179,7 @@ export function TerminalView({
                 type="button"
                 className="icon-btn"
                 title="Fullscreen"
+                aria-label="Fullscreen"
                 onClick={() => setFullscreen((value) => !value)}
               >
                 <IconFullscreen />

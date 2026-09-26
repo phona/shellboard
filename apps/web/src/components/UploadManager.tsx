@@ -54,7 +54,7 @@ export function UploadManager() {
   return (
     <div className="upload-pill" role="status" aria-live="polite">
       <div className="upload-pill-track">
-        <div className="upload-pill-bar" style={{ width: `${current.percent}%` }} />
+        <div className="upload-pill-bar" style={{ transform: `scaleX(${current.percent / 100})` }} />
       </div>
       <span>
         uploading {current.name} · {current.percent}%{rest > 0 ? ` (+${rest})` : ""}

@@ -118,7 +118,9 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
       const termTheme = readTerminalTheme();
       const term = new Terminal({
         cursorBlink: true,
-        fontSize,
+        // Read at creation only; later changes apply live in the refit
+        // effect below, which avoids tearing down the Terminal and its WS.
+        fontSize: useUi.getState().fontSize,
         fontFamily: readMonoFontStack(),
         scrollback,
         theme: termTheme,
@@ -416,12 +418,14 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
       disposed = true;
       cleanup();
     };
-    // scrollback changes require a fresh Terminal instance
-  }, [path, nonce, scrollback, fontSize, sendResize, wheelScroll]);
+    // scrollback changes require a fresh Terminal instance; fontSize must not
+    // be here — it applies live below, without dropping the PTY
+  }, [path, nonce, scrollback, sendResize, wheelScroll]);
 
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
+    term.options.fontSize = fontSize;
     try {
       fitRef.current?.fit();
     } catch {

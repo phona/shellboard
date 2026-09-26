@@ -47,7 +47,7 @@ export function DiffView({
         <span style={{ flex: 1 }} />
         <label>
           <input type="checkbox" checked={split} onChange={(e) => setSplit(e.target.checked)} />
-          split
+          Split
         </label>
       </div>
 
@@ -72,7 +72,7 @@ export function DiffView({
           !binaryNote &&
           parsed.map((file) => (
             <div key={`${file.oldPath}-${file.newPath}`} className="diff-file">
-              <div className="diff-file-head">{file.newPath || file.oldPath}</div>
+              {/* the toolbar already names the file — no per-file head */}
               <div className="diff-view">
                 <Diff viewType={split ? "split" : "unified"} diffType={file.type} hunks={file.hunks}>
                   {(hunks) => hunks.map((hunk) => <Hunk key={hunk.content} hunk={hunk} />)}

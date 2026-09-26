@@ -9,11 +9,15 @@
   --text: #1f2328;
   --text-muted: #59636e;
   --accent: #0969da;
+  /* Filled-accent surfaces (primary buttons, toast actions) in dark need a
+     deeper blue than --accent for white text to reach 4.5:1. */
+  --accent-strong: #0969da;
   --accent-text: #ffffff;
-  --working: #1a7f37;
+  /* working/warning need 4.5:1 on --surface-2 (diff letter chips at 11px) */
+  --working: #17702f;
   --idle: #8b949e;
   --danger: #cf222e;
-  --warning: #9a6700;
+  --warning: #8a5c00;
   --term-bg: #ffffff;
   --term-fg: #1f2328;
   --term-cursor: #1f2328;
@@ -37,6 +41,7 @@
   --text: #e6edf3;
   --text-muted: #8b949e;
   --accent: #2f81f7;
+  --accent-strong: #1f6feb;
   --accent-text: #ffffff;
   --working: #3fb950;
   --idle: #6e7681;
@@ -522,14 +527,14 @@ button:focus-visible {
 }
 
 .btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
   color: var(--accent-text);
 }
 
 .btn.primary:hover {
   opacity: 0.9;
-  background: var(--accent);
+  background: var(--accent-strong);
 }
 
 .btn.danger {
@@ -772,11 +777,14 @@ button:focus-visible {
   overflow: hidden;
 }
 
+/* Progress moves on the compositor (scaleX), not layout (width). */
 .upload-pill-bar {
   height: 100%;
+  width: 100%;
   border-radius: 2px;
   background: var(--accent);
-  transition: width 0.15s linear;
+  transform-origin: 0 50%;
+  transition: transform 0.15s linear;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -896,6 +904,7 @@ button:focus-visible {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--text-muted);
 }
 
@@ -911,6 +920,14 @@ button:focus-visible {
 
 .file-row:hover {
   background: var(--surface-hover);
+}
+
+/* Rows are keyboard-activatable (rowActivator); give them the standard
+   focus language instead of the browser default ring. */
+.file-row:focus-visible,
+.tree-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .file-row.selected {
@@ -990,13 +1007,6 @@ button:focus-visible {
   color: var(--text-muted);
   padding: 24px;
   text-align: center;
-}
-
-.diff-file-head {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 2px 4px;
 }
 
 /* path shown in the DiffView toolbar (center workspace) */
@@ -1439,14 +1449,14 @@ button:focus-visible {
   margin-left: 10px;
   padding: 1px 10px;
   font-size: 12px;
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
   color: var(--accent-text);
 }
 
 .toast-action:hover {
   opacity: 0.9;
-  background: var(--accent);
+  background: var(--accent-strong);
 }
 
 /* ---------- token gate ---------- */

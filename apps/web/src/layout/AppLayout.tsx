@@ -55,6 +55,7 @@ function CycleThemeButton() {
       type="button"
       className="icon-btn"
       title="Toggle theme (System → Light → Dark)"
+      aria-label="Cycle theme"
       onClick={() => setThemeMode(NEXT_THEME[getThemeMode()])}
     >
       ☀/☾
@@ -206,6 +207,7 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
         ref={searchRef}
         className="search"
         placeholder={`Search sessions  (${KEYBINDINGS.search})`}
+        aria-label="Search sessions"
         value={searchQuery}
         onChange={(event) => useUi.getState().setSearchQuery(event.target.value)}
       />
@@ -331,6 +333,7 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
                 <input
                   className="search"
                   placeholder="Search sessions"
+                  aria-label="Search sessions"
                   value={searchQuery}
                   onChange={(event) => useUi.getState().setSearchQuery(event.target.value)}
                 />
@@ -457,6 +460,7 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
                   ? "Scale down panel (Esc also restores)"
                   : "Maximize panel (covers the agent shell; Esc restores)"
               }
+              aria-label={toolMaximized ? "Scale down panel" : "Maximize panel"}
               onClick={() => (toolMaximized ? restore() : maximize())}
             >
               ⛶
@@ -465,6 +469,7 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
               type="button"
               className="icon-btn"
               title={`Collapse panel (${KEYBINDINGS.toggleRight})`}
+              aria-label="Collapse panel"
               onClick={() => {
                 if (useUi.getState().toolMaximized) restore();
                 useUi.getState().toggleRight();
@@ -492,10 +497,16 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
       </div>
 
       <footer className="statusbar">
-        <span>{sessions.length} sessions</span>
-        <span>
-          <span className="dot">●</span> {working} working · {idle} idle
-        </span>
+        {sessions.length > 0 && (
+          <span>
+            {sessions.length} session{sessions.length === 1 ? "" : "s"}
+          </span>
+        )}
+        {sessions.length > 0 && (
+          <span>
+            <span className="dot">●</span> {working} working · {idle} idle
+          </span>
+        )}
         {selected && (
           <span>
             {selected.session.name} · {AGENT_LABEL[selected.session.agentType]} ·{" "}

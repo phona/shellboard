@@ -5,7 +5,7 @@ import { ApiError, api } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { useUi } from "../../state/store";
 import { toast } from "../../state/toasts";
-import { basenamePosix, dirnamePosix } from "../../util/dom";
+import { basenamePosix, dirnamePosix, rowActivator } from "../../util/dom";
 
 interface FileRow {
   path: string;
@@ -71,6 +71,7 @@ function FileRow({
     <div
       className={selected ? "file-row selected" : "file-row"}
       onClick={onSelect}
+      {...rowActivator(onSelect)}
       title={row.origPath ? `${row.origPath} → ${row.path}` : row.path}
     >
       <span className={`letter letter-${row.letter}`}>{row.letter}</span>
@@ -262,6 +263,7 @@ export function DiffPanel({ data }: { data: SessionWithRuntime }) {
               style={{ paddingLeft: 10 + entry.depth * 12 }}
               title={entry.path}
               onClick={() => toggleDir(entry.path)}
+              {...rowActivator(() => toggleDir(entry.path))}
             >
               <span className="chev">{collapsed.has(entry.path) ? "▸" : "▾"}</span>
               <span className="name">{entry.name}</span>
@@ -277,6 +279,7 @@ export function DiffPanel({ data }: { data: SessionWithRuntime }) {
             style={{ paddingLeft: 10 + entry.depth * 12 }}
             title={row.origPath ? `${row.origPath} → ${row.path}` : row.path}
             onClick={() => open(row)}
+            {...rowActivator(() => open(row))}
           >
             <span className={`letter letter-${row.letter}`}>{row.letter}</span>
             <span className="name">{entry.name}</span>
@@ -298,11 +301,11 @@ export function DiffPanel({ data }: { data: SessionWithRuntime }) {
         <span className="count">{files.length} changed</span>
         <label>
           <input type="checkbox" checked={treeMode} onChange={(e) => setTreeMode(e.target.checked)} />
-          tree
+          Tree
         </label>
         <span style={{ flex: 1 }} />
         <button type="button" onClick={() => void status.refetch()}>
-          refresh
+          Refresh
         </button>
       </div>
 

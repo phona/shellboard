@@ -28,6 +28,7 @@ export function SettingsPopover() {
         type="button"
         className="icon-btn"
         title="Settings"
+        aria-label="Settings"
         onClick={() => setOpen((value) => !value)}
       >
         ⚙

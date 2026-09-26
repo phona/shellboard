@@ -10,7 +10,10 @@ export class GitService {
   async status(cwd: string): Promise<GitStatus> {
     const result = await execa(
       "git",
-      ["-C", cwd, "status", "--porcelain=v2", "--branch"],
+      // --untracked-files=all: collapsed "dir/" entries would render as nameless
+      // rows in the diff list and defeat `clean -f` on discard; list untracked
+      // files individually instead
+      ["-C", cwd, "status", "--porcelain=v2", "--branch", "--untracked-files=all"],
       { reject: false },
     );
     if (result.failed) return { branch: null, entries: [] };
