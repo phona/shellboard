@@ -81,6 +81,14 @@ export function TerminalView({
           >
             A+
           </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title="Copy selection (Shift+drag to select)"
+            onClick={terminal.copySelection}
+          >
+            ⧉
+          </button>
           <button type="button" className="icon-btn" title="Paste" onClick={terminal.paste}>
             ⎘
           </button>

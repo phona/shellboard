@@ -449,6 +449,10 @@ button:focus-visible {
   min-height: 0;
   padding: 4px 6px;
   background: var(--term-bg);
+  /* wheel scrolling is delegated to tmux; keep touch drags from scrolling
+     the page and from chaining past the terminal */
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 
 .terminal-host .xterm {

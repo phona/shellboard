@@ -21,6 +21,7 @@ export interface TerminalApi {
   reconnect(): void;
   sendText(text: string): void;
   paste(): void;
+  copySelection(): void;
   fit(): void;
   searchOpen: boolean;
   setSearchOpen(open: boolean): void;
@@ -90,12 +91,20 @@ export function useTerminalWs(path: string): TerminalApi {
     term.open(container);
 
     term.attachCustomKeyEventHandler((event) => {
-      if (
-        event.type === "keydown" &&
-        (event.ctrlKey || event.metaKey) &&
-        event.key.toLowerCase() === "f"
-      ) {
+      if (event.type !== "keydown") return true;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         setSearchOpen(true);
+        return false;
+      }
+      // tmux mouse reporting is on, so selection is Shift+drag; make the
+      // usual copy chord work on it instead of sending ^C to the shell
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c" && term.hasSelection()) {
+        void navigator.clipboard
+          .writeText(term.getSelection())
+          .catch(() => {
+            // clipboard permission denied
+          });
+        term.clearSelection();
         return false;
       }
       return true;
@@ -204,6 +213,17 @@ export function useTerminalWs(path: string): TerminalApi {
       });
   }, []);
 
+  const copySelection = useCallback(() => {
+    const selection = termRef.current?.getSelection();
+    if (!selection) return;
+    void navigator.clipboard
+      .writeText(selection)
+      .then(() => termRef.current?.clearSelection())
+      .catch(() => {
+        // clipboard permission denied
+      });
+  }, []);
+
   const findNext = useCallback((term?: string) => {
     const search = searchRef.current;
     if (!search || term === undefined || term.length === 0) return;
@@ -221,6 +241,7 @@ export function useTerminalWs(path: string): TerminalApi {
     reconnect,
     sendText,
     paste,
+    copySelection,
     fit,
     searchOpen,
     setSearchOpen,

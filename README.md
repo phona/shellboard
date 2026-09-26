@@ -81,6 +81,7 @@ pnpm check            # typecheck(tsc)+ eslint
 
 ## 已知限制
 
+- 终端滚轮滚动由 tmux 接管(`mouse on`,滚轮 = copy-mode 滚动);文本选择用 **Shift+拖拽**(浏览器级选择),`Ctrl+C`/工具栏 ⧉ 复制选区,`Ctrl+V` 粘贴。触摸设备:点按等效鼠标点击,拖动是 tmux 文本选择——触摸滚动暂无完美方案。
 - 重连后终端只显示当前屏,历史在 tmux copy-mode(终端工具条的 ⇲ 按钮进入)。
 - Activity 是 tmux 输出活动的近似(Agent 静默思考会显示 idle),这是设计取舍而非 bug。
 - Windows 不支持(通过浏览器访问 Linux 上的 Shellboard)。

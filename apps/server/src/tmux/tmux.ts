@@ -71,7 +71,18 @@ export class TmuxService {
         ...command,
       ),
     );
+    await this.applySessionOptions(name);
+  }
+
+  /**
+   * Options every shellboard session runs with:
+   * - monitor-activity: feeds the activity observer (D3)
+   * - mouse: wheel scrolling goes to tmux (copy-mode scroll) instead of the
+   *   alternate-scroll fallback, which sends arrow keys to the inner shell.
+   */
+  async applySessionOptions(name: string): Promise<void> {
     await execa("tmux", this.args("set-option", "-t", name, "monitor-activity", "on"));
+    await execa("tmux", this.args("set-option", "-t", name, "mouse", "on"));
   }
 
   async killSession(name: string): Promise<boolean> {
