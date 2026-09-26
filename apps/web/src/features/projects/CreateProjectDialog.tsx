@@ -4,6 +4,7 @@ import type { Project } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { DirectoryPickerModal } from "../../components/DirectoryPickerModal";
 import { Modal } from "../../components/Modal";
+import { basenamePosix } from "../../util/dom";
 
 export function CreateProjectDialog({
   onClose,
@@ -14,10 +15,19 @@ export function CreateProjectDialog({
 }) {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  const [nameDirty, setNameDirty] = useState(false);
   const [rootPath, setRootPath] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  function applyRootPath(value: string) {
+    setRootPath(value);
+    if (!nameDirty) {
+      const base = basenamePosix(value.trim().replace(/\/+$/, ""));
+      if (base) setName(base);
+    }
+  }
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -43,7 +53,10 @@ export function CreateProjectDialog({
           <input
             autoFocus
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => {
+              setName(event.target.value);
+              setNameDirty(true);
+            }}
             placeholder="race-platform"
           />
         </label>
@@ -52,7 +65,7 @@ export function CreateProjectDialog({
           <span className="path-row">
             <input
               value={rootPath}
-              onChange={(event) => setRootPath(event.target.value)}
+              onChange={(event) => applyRootPath(event.target.value)}
               placeholder="/home/you/projects/race-platform"
             />
             <button type="button" onClick={() => setPickerOpen(true)}>
@@ -73,7 +86,7 @@ export function CreateProjectDialog({
       {pickerOpen && (
         <DirectoryPickerModal
           initialPath={rootPath || undefined}
-          onSelect={(path) => setRootPath(path)}
+          onSelect={(path) => applyRootPath(path)}
           onClose={() => setPickerOpen(false)}
         />
       )}
