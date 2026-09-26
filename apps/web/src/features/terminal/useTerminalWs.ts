@@ -138,7 +138,9 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     term.parser.registerCsiHandler({ prefix: "?", final: "l" }, swallowMouse);
 
     // Wheel: tmux owns the scrollback, so forward scroll intents to the
-    // server (it drives tmux copy-mode). Accumulated and throttled.
+    // server (it drives tmux copy-mode). Wheel-up (deltaY < 0) means "towards
+    // history" and the server takes positive lines as scroll-up, so negate.
+    // deltaMode 1 (Firefox) reports lines, not pixels. Accumulated, throttled.
     let wheelAccum = 0;
     let wheelTimer: number | null = null;
     const flushWheel = () => {
@@ -153,7 +155,8 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      wheelAccum += event.deltaY / 18;
+      const delta = event.deltaMode === 1 ? event.deltaY : event.deltaY / 18;
+      wheelAccum -= delta;
       if (wheelTimer === null) {
         wheelTimer = window.setTimeout(flushWheel, 90);
       }
