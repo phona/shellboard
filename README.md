@@ -35,6 +35,15 @@ pnpm dev              # 并行起 server(:7700)与 vite(:5173),开发用
 
 浏览器打开 <http://localhost:5173>。
 
+开发态远程访问(从局域网其他机器打开):
+
+```bash
+SHELLBOARD_WEB_HOST=0.0.0.0 SHELLBOARD_WEB_PORT=5199 SHELLBOARD_TOKEN=your-secret pnpm dev
+# 浏览器访问 http://<server-ip>:5199
+```
+
+注意:`pnpm dev -- --host …` 这类参数透传会被递归脚本打碎(vite 收到的是 `-- --host`),请用上面的环境变量;API 端口/地址用 `SHELLBOARD_PORT` / `SHELLBOARD_HOST`。
+
 生产部署:
 
 ```bash
@@ -53,8 +62,9 @@ pnpm check            # typecheck(tsc)+ eslint
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `SHELLBOARD_PORT` | `7700` | 监听端口 |
-| `SHELLBOARD_HOST` | `127.0.0.1` | 监听地址;**保持回环**,远程走 Tailscale/Cloudflare Tunnel |
+| `SHELLBOARD_PORT` | `7700` | API 监听端口(开发态 vite 代理目标跟随此值) |
+| `SHELLBOARD_HOST` | `127.0.0.1` | API 监听地址;**保持回环**,远程走 Tailscale/Cloudflare Tunnel |
+| `SHELLBOARD_WEB_PORT` | `5173` | 仅开发态:vite dev server 端口 |
 | `SHELLBOARD_HOME` | `~/.shellboard` | 数据目录(SQLite 在 `shellboard.db`) |
 | `SHELLBOARD_TMUX_SOCKET` | `shellboard` | 专用 tmux socket 名 |
 | `SHELLBOARD_TOKEN` | 空(关闭鉴权) | 设置后所有 API 需 token 登录(HttpOnly cookie) |

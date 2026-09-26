@@ -46,8 +46,14 @@ export function originAllowed(request: IncomingMessage, config: ServerConfig): b
   } catch {
     return false;
   }
-  const host = request.headers.host;
-  if (host && originHost === host) return true;
+  // "host" is the direct Host header; "x-forwarded-host" is set by proxies
+  // (e.g. the vite dev proxy) that rewrite Host to the upstream target.
+  const hosts = [request.headers.host, request.headers["x-forwarded-host"]];
+  for (const host of hosts) {
+    if (typeof host !== "string") continue;
+    const first = host.split(",")[0]?.trim();
+    if (first && first === originHost) return true;
+  }
   return config.allowedOrigins.includes(origin);
 }
 
