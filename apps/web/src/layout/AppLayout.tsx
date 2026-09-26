@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, type ReactNode } from "react";
 import { api } from "../api/client";
+import { ErrorBoundary } from "../components/ErrorBoundary";
 import { DiffPanel } from "../features/git/DiffPanel";
 import { FilesPanel } from "../features/files/FilesPanel";
 import { TerminalView } from "../features/terminal/TerminalView";
@@ -151,7 +152,9 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
 
         <main className="center">
           {selected ? (
-            <TerminalView key={selected.session.id} data={selected} variant="agent" />
+            <ErrorBoundary>
+              <TerminalView key={selected.session.id} data={selected} variant="agent" />
+            </ErrorBoundary>
           ) : (
             <div className="empty-center">
               <h1>Shellboard</h1>
@@ -190,13 +193,15 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
           </div>
           <div className="tool-body">
             {rightCollapsed ? null : selected ? (
-              rightTab === "diff" ? (
-                <DiffPanel data={selected} />
-              ) : rightTab === "files" ? (
-                <FilesPanel data={selected} />
-              ) : (
-                <TerminalView data={selected} variant="tool" />
-              )
+              <ErrorBoundary>
+                {rightTab === "diff" ? (
+                  <DiffPanel data={selected} />
+                ) : rightTab === "files" ? (
+                  <FilesPanel data={selected} />
+                ) : (
+                  <TerminalView data={selected} variant="tool" />
+                )}
+              </ErrorBoundary>
             ) : (
               <div className="tool-placeholder">Select a session</div>
             )}

@@ -74,6 +74,8 @@ export function useTerminalWs(path: string): TerminalApi {
       fontFamily: FONT_FAMILY,
       scrollback,
       theme: readTerminalTheme(),
+      // Unicode11Addon relies on the proposed unicode API
+      allowProposedApi: true,
     });
     termRef.current = term;
     const fitAddon = new FitAddon();
@@ -84,6 +86,7 @@ export function useTerminalWs(path: string): TerminalApi {
     term.loadAddon(searchAddon);
     term.loadAddon(new WebLinksAddon());
     term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = "11";
     term.open(container);
 
     term.attachCustomKeyEventHandler((event) => {
