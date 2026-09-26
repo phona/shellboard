@@ -51,6 +51,14 @@ export interface TerminalTheme {
   searchActive: string;
 }
 
+/** The mono stack (JetBrains Mono first) — single source of truth: theme.css. */
+export function readMonoFontStack(): string {
+  const stack = getComputedStyle(document.documentElement)
+    .getPropertyValue("--mono")
+    .trim();
+  return stack || 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+}
+
 export function readTerminalTheme(): TerminalTheme {
   const style = getComputedStyle(document.documentElement);
   const read = (name: string, fallback: string): string =>

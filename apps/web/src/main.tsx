@@ -2,7 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { App } from "./app";
 import { initTheme } from "./state/theme";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/700.css";
 import "@xterm/xterm/css/xterm.css";
+import "react-diff-view/style/index.css";
 import "./theme.css";
 
 initTheme();

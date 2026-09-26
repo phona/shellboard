@@ -21,7 +21,7 @@
   --term-search-match: rgba(154, 103, 0, 0.28);
   --term-search-active: rgba(9, 105, 218, 0.42);
   --shadow: 0 8px 24px rgba(140, 152, 164, 0.25);
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --topbar-h: 42px;
   --statusbar-h: 26px;
 }
