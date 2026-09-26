@@ -3,6 +3,7 @@ import { TokenGate } from "./features/auth/TokenGate";
 import { SessionSidebar } from "./features/sessions/SessionSidebar";
 import { useEvents } from "./events/useEvents";
 import { AppLayout } from "./layout/AppLayout";
+import { UploadManager } from "./components/UploadManager";
 import { useUi } from "./state/store";
 import { ToastStack } from "./components/ToastStack";
 import { isTypingTarget, matchesBinding, KEYBINDINGS } from "./util/dom";
@@ -31,6 +32,7 @@ export function App() {
       <TokenGate />
       <AppLayout sidebar={<SessionSidebar />} />
       <ToastStack />
+      <UploadManager />
     </>
   );
 }

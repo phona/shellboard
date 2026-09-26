@@ -12,6 +12,7 @@ import type {
   SaveFileInput,
   Session,
   SessionWithRuntime,
+  UploadList,
 } from "@shellboard/contracts";
 import { useUi } from "../state/store.js";
 
@@ -139,7 +140,71 @@ export const api = {
     downloadUrl: (id: string, path: string) =>
       `/api/sessions/${id}/files/download${query({ path })}`,
   },
+  uploads: {
+    list: (id: string) => http<UploadList>(`/api/sessions/${id}/uploads`),
+    remove: (id: string, name: string) =>
+      http<{ ok: boolean }>(`/api/sessions/${id}/uploads${query({ name })}`, {
+        method: "DELETE",
+      }),
+    send: (id: string, name: string) =>
+      http<{ ok: boolean }>(`/api/sessions/${id}/uploads/send`, {
+        method: "POST",
+        json: { name },
+      }),
+  },
 };
+
+export interface UploadTarget {
+  sessionId: string;
+  /** Repo-relative directory inside the session cwd; omitted = upload buffer. */
+  dir?: string;
+}
+
+/**
+ * Raw binary upload (application/octet-stream) with progress. fetch() has no
+ * upload progress, so this is an XMLHttpRequest. Resolves with the final
+ * server-side name (the buffer lane uniquifies collisions).
+ */
+export function uploadBinary(
+  target: UploadTarget,
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<{ name: string }> {
+  const search =
+    target.dir === undefined
+      ? query({ name: file.name })
+      : query({ path: target.dir, name: file.name });
+  const url =
+    target.dir === undefined
+      ? `/api/sessions/${target.sessionId}/uploads${search}`
+      : `/api/sessions/${target.sessionId}/files/upload${search}`;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.responseType = "json";
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0 && onProgress) {
+        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        useUi.getState().setAuthRequired(true);
+        reject(new ApiError(401, "unauthorized"));
+        return;
+      }
+      const body = xhr.response as { error?: string; name?: string } | null;
+      if (xhr.status >= 200 && xhr.status < 300 && typeof body?.name === "string") {
+        resolve({ name: body.name });
+        return;
+      }
+      reject(new ApiError(xhr.status, body?.error ?? `${xhr.status} ${xhr.statusText}`));
+    };
+    xhr.onerror = () => reject(new ApiError(0, "network error"));
+    xhr.send(file);
+  });
+}
 
 export function wsUrl(path: string): string {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";

@@ -1,4 +1,4 @@
-import { useToasts } from "../state/toasts";
+import { dismiss, useToasts } from "../state/toasts";
 
 export function ToastStack() {
   const toasts = useToasts();
@@ -10,7 +10,20 @@ export function ToastStack() {
           className={`toast ${item.kind}`}
           role={item.kind === "error" ? "alert" : undefined}
         >
-          {item.message}
+          <span>{item.message}</span>
+          {item.action && (
+            <button
+              type="button"
+              className="toast-action"
+              onClick={() => {
+                const action = item.action;
+                dismiss(item.id);
+                action?.onClick();
+              }}
+            >
+              {item.action.label}
+            </button>
+          )}
         </div>
       ))}
     </div>

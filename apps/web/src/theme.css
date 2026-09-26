@@ -738,6 +738,53 @@ button:focus-visible {
   font-weight: 600;
 }
 
+/* ---------- upload progress pill ---------- */
+
+/* Mirrors the history pill: quiet chrome that reports without stealing
+   space from the terminal. Visible only while a batch is in flight. */
+.upload-pill {
+  position: fixed;
+  left: 16px;
+  bottom: 38px;
+  z-index: 110;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 420px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.upload-pill-track {
+  flex: none;
+  width: 64px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.upload-pill-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.15s linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upload-pill-bar {
+    transition: none;
+  }
+}
+
 /* ---------- tool view ---------- */
 
 .tool-tabs {
@@ -991,6 +1038,40 @@ button:focus-visible {
 
 .files-layout {
   flex-direction: column;
+}
+
+/* Upload buffer (attachments lane): pinned above the repo tree. Rows reuse
+   .tree-row geometry; the section never scrolls away from the top. */
+.uploads-section {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 2px;
+  margin-bottom: 2px;
+}
+
+.uploads-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+}
+
+.uploads-head .spacer {
+  flex: 1;
+}
+
+.uploads-head .icon-btn {
+  font-size: 11px;
+}
+
+.tree-row.upload-row .row-actions button {
+  display: inline-flex;
+  align-items: center;
+}
+
+.file-tree.dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
 }
 
 .breadcrumb {
@@ -1354,6 +1435,20 @@ button:focus-visible {
   border-left-color: var(--danger);
 }
 
+.toast-action {
+  margin-left: 10px;
+  padding: 1px 10px;
+  font-size: 12px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.toast-action:hover {
+  opacity: 0.9;
+  background: var(--accent);
+}
+
 /* ---------- token gate ---------- */
 
 .token-gate {
@@ -1601,6 +1696,14 @@ button:focus-visible {
 
   .toast {
     max-width: none;
+  }
+
+  .upload-pill {
+    left: 12px;
+    right: auto;
+    bottom: auto;
+    top: calc(var(--topbar-h) + 8px);
+    max-width: calc(100vw - 24px);
   }
 }
 

@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import type { FileEntry, SessionWithRuntime } from "@shellboard/contracts";
+import type { FileEntry, SessionWithRuntime, UploadEntry } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { Modal } from "../../components/Modal";
+import { IconCopy } from "../../components/icons";
 import { FileEditor } from "./FileEditor";
 import { toast } from "../../state/toasts";
-import { arrayBufferToBase64, joinPosix, parentPosix } from "../../util/dom";
+import { useUploads } from "../../state/uploads";
+import { joinPosix, parentPosix } from "../../util/dom";
 import { formatSize } from "../../util/format";
 
 const ICONS: Record<FileEntry["type"], string> = {
@@ -28,7 +30,9 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
   const [prompt, setPrompt] = useState<PromptState | null>(null);
   const [promptValue, setPromptValue] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<FileEntry | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const uploadRef = useRef<HTMLInputElement | null>(null);
+  const laneInputRef = useRef<HTMLInputElement | null>(null);
 
   const list = useQuery({
     queryKey: ["files", "list", id, dir],
@@ -36,9 +40,18 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
     retry: 0,
   });
 
+  const uploads = useQuery({
+    queryKey: ["uploads", id],
+    queryFn: () => api.uploads.list(id),
+  });
+
   const invalidate = async () => {
     await queryClient.invalidateQueries({ queryKey: ["files", "list"] });
     await queryClient.invalidateQueries({ queryKey: ["git"] });
+  };
+
+  const invalidateUploads = () => {
+    void queryClient.invalidateQueries({ queryKey: ["uploads"] });
   };
 
   const onError = (err: unknown, fallback: string) =>
@@ -71,24 +84,43 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
     },
     onError: (err) => onError(err, "delete failed"),
   });
+  const sendUpload = useMutation({
+    mutationFn: (name: string) => api.uploads.send(id, name),
+    onSuccess: () => toast("path sent to terminal"),
+    onError: (err) => onError(err, "send failed"),
+  });
+  const removeUpload = useMutation({
+    mutationFn: (name: string) => api.uploads.remove(id, name),
+    onSuccess: invalidateUploads,
+    onError: (err) => onError(err, "delete failed"),
+  });
 
-  const upload = async (files: FileList | null) => {
-    if (!files) return;
-    try {
-      for (const file of Array.from(files)) {
-        const base64 = arrayBufferToBase64(await file.arrayBuffer());
-        await api.files.create(id, {
-          path: joinPosix(dir, file.name),
-          type: "file",
-          content: base64,
-          encoding: "base64",
-        });
-      }
-      toast("uploaded");
-      await invalidate();
-    } catch (err) {
-      onError(err, "upload failed");
-    }
+  const copyUploadPath = (entry: UploadEntry) => {
+    void navigator.clipboard.writeText(entry.path).then(() => toast("path copied"));
+  };
+
+  // Explicit intent: the toolbar button uploads into the browsed directory.
+  const uploadToDir = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    useUploads.getState().start({
+      sessionId: id,
+      files: Array.from(files),
+      dir,
+      onSettled: invalidate,
+    });
+  };
+
+  // Quick-drop gestures (drag, paste, photo picker) go to the upload buffer —
+  // the working tree is never touched without an explicit target.
+  const uploadToBuffer = (files: File[]) => {
+    if (files.length === 0) return;
+    useUploads.getState().start({ sessionId: id, files, onSettled: invalidateUploads });
+  };
+
+  const onDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    setDragOver(false);
+    uploadToBuffer(Array.from(event.dataTransfer.files));
   };
 
   if (editing) {
@@ -141,7 +173,7 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
         <button type="button" title="New folder" onClick={() => { setPrompt({ kind: "dir" }); setPromptValue(""); }}>
           + dir
         </button>
-        <button type="button" title="Upload" onClick={() => uploadRef.current?.click()}>
+        <button type="button" title="Upload into this directory" onClick={() => uploadRef.current?.click()}>
           ↑ file
         </button>
         <input
@@ -150,13 +182,81 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
           multiple
           hidden
           onChange={(event) => {
-            void upload(event.target.files);
+            uploadToDir(event.target.files);
             event.target.value = "";
           }}
         />
       </div>
 
-      <div className="file-tree">
+      <div
+        className={dragOver ? "file-tree dragover" : "file-tree"}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+      >
+        <div className="uploads-section">
+          <div className="uploads-head">
+            <span className="section-label">
+              Uploads
+              {(uploads.data?.entries.length ?? 0) > 0 && ` (${uploads.data?.entries.length})`}
+            </span>
+            <span className="spacer" />
+            <input
+              ref={laneInputRef}
+              type="file"
+              multiple
+              accept="image/*"
+              hidden
+              onChange={(event) => {
+                uploadToBuffer(Array.from(event.target.files ?? []));
+                event.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              className="icon-btn"
+              title="Upload image into the buffer (never the repo)"
+              onClick={() => laneInputRef.current?.click()}
+            >
+              ↑ img
+            </button>
+          </div>
+          {(uploads.data?.entries ?? []).map((entry) => (
+            <div key={entry.name} className="tree-row upload-row" title={entry.path}>
+              <span className="icon" style={{ color: "var(--accent)" }}>
+                ↑
+              </span>
+              <span className="name">{entry.name}</span>
+              <span className="size">{formatSize(entry.size)}</span>
+              <span className="row-actions">
+                <button
+                  type="button"
+                  title="Send absolute path to the agent shell (types it, no Enter)"
+                  onClick={() => sendUpload.mutate(entry.name)}
+                >
+                  →
+                </button>
+                <button
+                  type="button"
+                  title="Copy absolute path"
+                  onClick={() => copyUploadPath(entry)}
+                >
+                  <IconCopy />
+                </button>
+                <button
+                  type="button"
+                  title="Delete"
+                  onClick={() => removeUpload.mutate(entry.name)}
+                >
+                  ×
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
         {list.isLoading && <div className="tool-placeholder">loading…</div>}
         {list.isError && (
           <div className="tool-placeholder">
