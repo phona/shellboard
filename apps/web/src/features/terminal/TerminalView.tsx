@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { SessionWithRuntime } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
+import { IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconPaste, IconSearch } from "../../components/icons";
 import { Modal } from "../../components/Modal";
 import { toast } from "../../state/toasts";
 import { useUi } from "../../state/store";
@@ -69,7 +70,7 @@ export function TerminalView({
             title="Search (Ctrl+F)"
             onClick={() => terminal.setSearchOpen(!terminal.searchOpen)}
           >
-            ⌕
+            <IconSearch />
           </button>
           <button
             type="button"
@@ -77,7 +78,7 @@ export function TerminalView({
             title="Smaller font"
             onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize - 1)}
           >
-            A−
+            <IconFontMinus />
           </button>
           <button
             type="button"
@@ -85,18 +86,18 @@ export function TerminalView({
             title="Larger font"
             onClick={() => useUi.getState().setFontSize(useUi.getState().fontSize + 1)}
           >
-            A+
+            <IconFontPlus />
           </button>
           <button
             type="button"
             className="icon-btn"
-            title="Copy selection (Shift+drag to select)"
+            title="Copy selection (drag to select)"
             onClick={terminal.copySelection}
           >
-            ⧉
+            <IconCopy />
           </button>
           <button type="button" className="icon-btn" title="Paste" onClick={terminal.paste}>
-            ⎘
+            <IconPaste />
           </button>
           {variant === "agent" && (
             <button
@@ -105,7 +106,7 @@ export function TerminalView({
               title="History (one page up)"
               onClick={terminal.historyPage}
             >
-              ⇲
+              <IconHistory />
             </button>
           )}
           <button
@@ -114,7 +115,7 @@ export function TerminalView({
             title="Fullscreen"
             onClick={() => setFullscreen((value) => !value)}
           >
-            ⛶
+            <IconFullscreen />
           </button>
         </div>
       </div>
