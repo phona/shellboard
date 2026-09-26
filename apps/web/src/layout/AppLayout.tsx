@@ -149,6 +149,17 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
           {sidebar}
         </aside>
         {!leftCollapsed && <div className="gutter" onPointerDown={dragLeft} />}
+        {leftCollapsed && (
+          <button
+            type="button"
+            className="panel-reopen"
+            title={`Show sessions (${KEYBINDINGS.toggleLeft})`}
+            aria-label="Show sessions"
+            onClick={() => useUi.getState().toggleLeft()}
+          >
+            »
+          </button>
+        )}
 
         <main className="center">
           {selected ? (
@@ -185,7 +196,7 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
             <button
               type="button"
               className="icon-btn"
-              title="Collapse panel"
+              title={`Collapse panel (${KEYBINDINGS.toggleRight})`}
               onClick={() => useUi.getState().toggleRight()}
             >
               »
@@ -208,6 +219,17 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
           </div>
         </aside>
         {!rightCollapsed && <div className="gutter" onPointerDown={dragRight} />}
+        {rightCollapsed && (
+          <button
+            type="button"
+            className="panel-reopen"
+            title={`Show tool panel (${KEYBINDINGS.toggleRight})`}
+            aria-label="Show tool panel"
+            onClick={() => useUi.getState().toggleRight()}
+          >
+            «
+          </button>
+        )}
       </div>
 
       <footer className="statusbar">
