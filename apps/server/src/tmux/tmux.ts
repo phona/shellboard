@@ -146,11 +146,28 @@ export class TmuxService {
    * the position (verified on tmux 3.7), so no state pre-check is needed.
    * Wheel requests are coalesced per session, and scrolls share a FIFO with
    * cancelCopyMode so cancels can never overtake a pending scroll.
+   *
+   * Panes in the alternate screen (Codex 0.157+ TUI, pagers) keep no tmux
+   * scrollback for copy-mode to move, and their DECSET 1007 (alternate
+   * scroll) request asks the terminal to deliver wheel intents as arrow
+   * keys instead — so there the channel translates to arrow keys.
    */
   private readonly scrollPending = new Map<string, number>();
   private readonly scrollDraining = new Set<string>();
   private readonly opQueues = new Map<string, Promise<void>>();
   private readonly copyModeListeners = new Map<string, (active: boolean) => void>();
+  /** Alternate-screen state observed at the pane's last scroll. */
+  private readonly altScreen = new Map<string, boolean>();
+
+  /**
+   * Whether a scroll-up may still put this pane into copy-mode. False only
+   * once a scroll has observed the pane in the alternate screen; unknown
+   * panes conservatively report true so the bridge keeps buffering input
+   * until tmux confirms the actual mode.
+   */
+  mayEnterCopyMode(name: string): boolean {
+    return this.altScreen.get(name) !== true;
+  }
 
   /** Notified whenever a scroll operation enters or leaves copy-mode. */
   setCopyModeListener(name: string, listener: (active: boolean) => void): void {
@@ -193,6 +210,14 @@ export class TmuxService {
     return result.stdout.trim() === "1";
   }
 
+  private async isAlternateScreen(name: string): Promise<boolean> {
+    const result = await execa(
+      "tmux",
+      this.args("display-message", "-p", "-t", name, "#{alternate_on}"),
+    );
+    return result.stdout.trim() === "1";
+  }
+
   private enqueue(name: string, task: () => Promise<void>): Promise<void> {
     const prev = this.opQueues.get(name) ?? Promise.resolve();
     const next = prev.then(task, task);
@@ -223,6 +248,27 @@ export class TmuxService {
   }
 
   private async applyScroll(name: string, lines: number): Promise<void> {
+    const alternate = await this.isAlternateScreen(name);
+    this.altScreen.set(name, alternate);
+    if (alternate) {
+      // The app owns the transcript here; DECSET 1007 semantics are "wheel
+      // becomes arrows" (Codex itself enables 1007 whenever it runs without
+      // tmux mouse reporting). |lines| arrow presses scroll the same number
+      // of rows, so page-sized requests stay correct without key names.
+      await execa(
+        "tmux",
+        this.args(
+          "send-keys",
+          "-t",
+          name,
+          "-N",
+          String(Math.abs(lines)),
+          lines > 0 ? "Up" : "Down",
+        ),
+      );
+      this.notifyCopyMode(name, false);
+      return;
+    }
     if (lines > 0) {
       // -H hides the copy-mode position indicator (e.g. [40/451]) — the web
       // HISTORY bar already conveys the mode. Re-entering copy-mode does not

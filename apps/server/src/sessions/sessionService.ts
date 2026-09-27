@@ -56,7 +56,7 @@ function resolveCommand(input: CreateSessionInput): string[] {
   }
   const command = AGENT_DEFAULT_COMMAND[input.agentType];
   if (!command) throw httpError(400, `unsupported agent type: ${input.agentType}`);
-  return [command];
+  return [...command];
 }
 
 export class SessionService {

@@ -116,7 +116,11 @@ export class TerminalBridge {
       },
       {
         onScroll: (lines) => {
-          if (lines > 0) setCopyMode(true);
+          // Optimistically arm copy-mode so keystrokes typed mid-scroll are
+          // buffered, not eaten. Alternate-screen panes never enter
+          // copy-mode (arrow translation instead) — the tmux-confirmed
+          // listener corrects any stale optimism from a previous scroll.
+          if (lines > 0 && this.tmux.mayEnterCopyMode(session.tmuxName)) setCopyMode(true);
           this.tmux.scroll(session.tmuxName, lines);
         },
         onInput: handleInput,

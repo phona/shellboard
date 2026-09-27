@@ -227,6 +227,17 @@ WebSocket 断开 / 浏览器关闭 → 只杀 node-pty(tmux client),不碰 tmux 
 
 Shellboard 不解析终端状态、不自主发起任何 PTY 输入(见开头红线)。唯一 carve-out 与 History 按钮同类:**用户显式点击**触发的 `tmux send-keys -l -- <绝对路径>`——纯文本、无换行、不回车,字节与键盘输入不可区分,提交永远由用户完成。禁止任何变体:自动粘贴、定时发送、带 `Enter`、读取屏幕来决定时机。"现在能不能打字"这个问题要么读屏(禁止)要么瞎猜(会打坏 vim/半行命令),所以时机责任永远在用户:终端就在眼前,点击前可见。
 
+### D7 滚动通道与 alternate screen
+
+Web 端滚轮不走 xterm.js 本地回滚,而是发 `{scroll, lines}` 控制消息,由服务端驱动 tmux。唯一面向用户的滚动通道,不含任何 agent 语义:
+
+- **普通 pane**(历史在 tmux scrollback,如 Claude Code、shell):`copy-mode -H` + `scroll-up/down`,到底自动退出 copy-mode,客户端靠 `copy-mode` 控制帧显示 HISTORY 条。
+- **alternate screen pane**(如 Codex 0.157+ 的全屏 TUI):pane 在 tmux 里没有任何历史,copy-mode 是死路。这类应用通过 DECSET 1007(alternate scroll)声明"滚轮请给我方向键",服务端把滚动意图翻译成等量的 `send-keys -N <n> Up/Down`,应用自己解释(浏览模式滚动、列表移动)。查询用的是 tmux 状态 `#{alternate_on}`,不是解析终端字节。
+
+tmux 的 `mouse` 选项归属交互模型(见 tmux.ts 注释),滚动通道不依赖它。
+
+Codex 的内置默认启动命令带 `-c tui.alternate_screen=never`(见 contracts 的 `AGENT_DEFAULT_COMMAND`):alt screen 模式下它的转写不进 tmux 历史,滚轮只能退化成方向键翻译;inline 模式让它和其它 inline agent 一样走 copy-mode 路径。旧会话沿用创建时落库的命令。
+
 ## 5. API Surface(全集)
 
 ```text

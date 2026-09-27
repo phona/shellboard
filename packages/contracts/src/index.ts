@@ -21,11 +21,18 @@ export const AGENT_PRESETS: ReadonlyArray<{ id: AgentType; label: string }> = [
   { id: "custom", label: "Custom" },
 ];
 
-export const AGENT_DEFAULT_COMMAND: Record<AgentType, string | null> = {
-  codex: "codex",
-  claude: "claude",
-  opencode: "opencode",
-  gemini: "gemini",
+/**
+ * Default argv per built-in agent type; `null` means the launch command is
+ * decided elsewhere (shell: login shell, custom: user-provided line).
+ * Codex launches inline (`tui.alternate_screen=never`): its alt-screen TUI
+ * keeps no tmux pane history, which leaves the scroll channel (D7) and
+ * copy-mode history nothing to work with.
+ */
+export const AGENT_DEFAULT_COMMAND: Record<AgentType, string[] | null> = {
+  codex: ["codex", "-c", "tui.alternate_screen=never"],
+  claude: ["claude"],
+  opencode: ["opencode"],
+  gemini: ["gemini"],
   shell: null,
   custom: null,
 };
