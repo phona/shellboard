@@ -68,7 +68,7 @@ pnpm check            # typecheck(tsc)+ eslint
 | `SHELLBOARD_HOME` | `~/.shellboard` | 数据目录(SQLite 在 `shellboard.db`) |
 | `SHELLBOARD_TMUX_SOCKET` | `shellboard` | 专用 tmux socket 名 |
 | `SHELLBOARD_TOKEN` | 空 = 回环免鉴权 | 非回环绑定时自动生成并打印;显式设置可固定 |
-| `SHELLBOARD_ALLOWED_ORIGINS` | vite dev 源 | 额外允许的 WebSocket Origin |
+| `SHELLBOARD_ALLOWED_ORIGINS` | vite dev 源 | 额外允许的 WebSocket Origin(完整 origin 或裸域名);开发态 vite 同时以此放行 `server.allowedHosts` |
 
 ## 安全模型
 

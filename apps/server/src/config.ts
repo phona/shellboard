@@ -11,7 +11,8 @@ export interface ServerConfig {
   webDist: string;
   /** When set, all /api routes (except /api/auth/*) require this token cookie. */
   token: string | null;
-  /** Extra origins allowed for WebSocket connections (dev: vite origin). */
+  /** Extra origins allowed for WebSocket connections (dev: vite origin).
+   * The vite dev server also derives server.allowedHosts from the same env. */
   allowedOrigins: string[];
 }
 
