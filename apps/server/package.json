@@ -2,6 +2,9 @@
   "name": "@shellboard/server",
   "private": true,
   "type": "module",
+  "bin": {
+    "shellboard-notify": "bin/shellboard-notify.mjs"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",

@@ -101,6 +101,14 @@ export class SessionService {
     return toSession(row);
   }
 
+  /** tmuxName is immutable, so it is a stable join key for notify events. */
+  findByTmuxName(tmuxName: string): Session | undefined {
+    const row = this.db.prepare("SELECT * FROM sessions WHERE tmux_name = ?").get(tmuxName) as
+      | SessionRow
+      | undefined;
+    return row ? toSession(row) : undefined;
+  }
+
   getWithRuntime(id: string): SessionWithRuntime {
     const session = this.get(id);
     return { session, runtime: this.tracker.get(session.id) };

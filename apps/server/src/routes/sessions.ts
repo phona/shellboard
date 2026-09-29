@@ -33,4 +33,5 @@ export function registerSessionRoutes(app: FastifyInstance, services: Services):
   app.post("/api/sessions/:id/restart", async (request) => {
     return services.sessions.restart(paramId(request));
   });
+
 }

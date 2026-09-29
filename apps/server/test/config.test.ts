@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { afterAll, expect, it } from "vitest";
 import { isLoopbackHost, loadConfig } from "../src/config";
 
@@ -39,4 +41,22 @@ it("honors an explicit SHELLBOARD_TOKEN on any host", () => {
   process.env.SHELLBOARD_HOST = "0.0.0.0";
   process.env.SHELLBOARD_TOKEN = "pinned-token";
   expect(loadConfig().token).toBe("pinned-token");
+});
+
+it("persists a stable notify token for the CLI", () => {
+  process.env.SHELLBOARD_HOST = "127.0.0.1";
+  delete process.env.SHELLBOARD_TOKEN;
+  delete process.env.SHELLBOARD_NOTIFY_TOKEN;
+  const first = loadConfig();
+  const second = loadConfig();
+  expect(first.notifyToken).toBe(second.notifyToken);
+  const tokenPath = path.join(first.homeDir, "notify-token");
+  expect((fs.statSync(tokenPath).mode & 0o777).toString(8)).toBe("600");
+  expect(fs.readFileSync(tokenPath, "utf8").trim()).toBe(first.notifyToken);
+});
+
+it("honors an explicit SHELLBOARD_NOTIFY_TOKEN", () => {
+  process.env.SHELLBOARD_HOST = "127.0.0.1";
+  process.env.SHELLBOARD_NOTIFY_TOKEN = "pinned-notify-token";
+  expect(loadConfig().notifyToken).toBe("pinned-notify-token");
 });

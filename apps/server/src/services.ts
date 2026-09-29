@@ -12,6 +12,7 @@ import { ToolTerminalManager } from "./terminal/toolTerminal.js";
 import { GitService } from "./git/gitService.js";
 import { FileService } from "./files/fileService.js";
 import { UploadService } from "./uploads/uploadService.js";
+import { NotifyService } from "./notify/notifyService.js";
 
 export interface Services {
   config: ServerConfig;
@@ -27,6 +28,7 @@ export interface Services {
   git: GitService;
   files: FileService;
   uploads: UploadService;
+  notifier: NotifyService;
 }
 
 export function buildServices(config: ServerConfig): Services {
@@ -38,6 +40,7 @@ export function buildServices(config: ServerConfig): Services {
   const projects = new ProjectService(db);
   const uploads = new UploadService(path.join(config.homeDir, "uploads"));
   const sessions = new SessionService(db, projects, tmux, tracker, bus, uploads);
+  const notifier = new NotifyService(config, tmux, sessions, bus);
   return {
     config,
     db,
@@ -47,10 +50,11 @@ export function buildServices(config: ServerConfig): Services {
     observer,
     projects,
     sessions,
-    bridge: new TerminalBridge(config.tmuxSocket, tracker, tmux),
+    bridge: new TerminalBridge(config.tmuxSocket, tracker),
     tools: new ToolTerminalManager(),
     git: new GitService(),
     files: new FileService(),
     uploads,
+    notifier,
   };
 }

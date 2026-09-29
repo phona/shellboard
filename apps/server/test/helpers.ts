@@ -58,7 +58,7 @@ export class FakeWS extends EventEmitter {
   closeCode: number | null = null;
 
   send(data: unknown, opts?: { binary?: boolean }): void {
-    if (opts?.binary) {
+    if (opts?.binary || Buffer.isBuffer(data)) {
       this.binary.push(Buffer.from(data as ArrayBuffer));
     } else {
       this.text.push(String(data));

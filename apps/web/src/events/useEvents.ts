@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import type { SessionWithRuntime, WsEvent } from "@shellboard/contracts";
 import { useUi } from "../state/store.js";
+import { toast } from "../state/toasts.js";
 import { wsUrl } from "../api/client.js";
 
 export function useEvents(): void {
@@ -70,6 +71,27 @@ export function useEvents(): void {
         case "git.status_changed":
           void queryClient.invalidateQueries({ queryKey: ["git"] });
           break;
+        case "session.notify": {
+          const { notifications, selectSession } = useUi.getState();
+          const sessionId = event.session?.id ?? null;
+          const message = event.body ? `${event.title} — ${event.body}` : event.title;
+          toast(
+            message.length > 200 ? `${message.slice(0, 199)}…` : message,
+            event.level === "error" ? "error" : "info",
+            sessionId ? { label: "Show", onClick: () => selectSession(sessionId) } : undefined,
+          );
+          if (
+            notifications &&
+            document.hidden &&
+            typeof Notification !== "undefined" &&
+            Notification.permission === "granted"
+          ) {
+            new Notification(event.session ? `Shellboard · ${event.session.name}` : "Shellboard", {
+              body: event.body ? `${event.title}\n${event.body}` : event.title,
+            });
+          }
+          break;
+        }
       }
     };
 

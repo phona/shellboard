@@ -12,6 +12,7 @@ import { registerGitRoutes } from "./routes/git.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerUploadRoutes } from "./routes/uploads.js";
 import { registerFsRoutes } from "./routes/fs.js";
+import { registerNotifyRoutes } from "./routes/notify.js";
 
 export interface BuildAppOptions {
   logger: boolean;
@@ -43,6 +44,7 @@ export async function buildApp(
   registerFileRoutes(app, services);
   registerUploadRoutes(app, services);
   registerFsRoutes(app);
+  registerNotifyRoutes(app, services);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {

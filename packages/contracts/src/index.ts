@@ -137,6 +137,33 @@ export const UploadListSchema = z.object({
 });
 export type UploadList = z.infer<typeof UploadListSchema>;
 
+export const NotifyLevelSchema = z.enum(["info", "success", "warning", "error"]);
+export type NotifyLevel = z.infer<typeof NotifyLevelSchema>;
+
+/** Session identity resolved server-side for a notify event. */
+export const NotifySessionInfoSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  agentType: AgentTypeSchema,
+  cwd: z.string(),
+});
+export type NotifySessionInfo = z.infer<typeof NotifySessionInfoSchema>;
+
+/**
+ * Inbound notify event (D8): the completion signal is declared by the agent
+ * CLI's own hook mechanism via the shellboard-notify CLI — never inferred
+ * from terminal bytes. `sessionId` names the session explicitly; `pane` is
+ * the TMUX_PANE value read inside the pane that ran the hook.
+ */
+export const NotifyInputSchema = z.object({
+  title: z.string().min(1).max(200),
+  body: z.string().max(4000).optional(),
+  level: NotifyLevelSchema.default("info"),
+  sessionId: z.string().min(1).optional(),
+  pane: z.string().min(1).max(100).optional(),
+});
+export type NotifyInput = z.infer<typeof NotifyInputSchema>;
+
 export const FileContentSchema = z.object({
   path: z.string(),
   content: z.string(),
@@ -156,6 +183,15 @@ export const WsEventSchema = z.discriminatedUnion("type", [
     runtime: SessionRuntimeSchema,
   }),
   z.object({ type: z.literal("git.status_changed"), projectId: z.string() }),
+  z.object({
+    type: z.literal("session.notify"),
+    title: z.string(),
+    body: z.string().nullable(),
+    level: NotifyLevelSchema,
+    at: z.number(),
+    /** Null when the event could not be attributed to a session. */
+    session: NotifySessionInfoSchema.nullable(),
+  }),
 ]);
 export type WsEvent = z.infer<typeof WsEventSchema>;
 
