@@ -18,7 +18,7 @@
 // held, startup fails fast naming the holder instead of racing it and dying
 // in a child's EADDRINUSE.
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { createServer, connect } from "node:net";
 import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 
@@ -160,6 +160,32 @@ function start(label, cwd, command, commandArgs) {
 
 // API server (env-configured; no CLI args)
 start("server", "apps/server", "./node_modules/.bin/tsx", ["watch", "src/server.ts"]);
+
+// Web starts only once the API accepts connections: an open browser tab
+// reconnects its WebSockets through vite the moment it appears, and a proxy
+// that lands before the API is bound logs a wall of "socket hang up" that
+// looks like breakage on every restart.
+const apiUp = await (async function waitForApi() {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const ok = await new Promise((resolve) => {
+      const socket = connect(apiPort, "127.0.0.1");
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once("error", () => resolve(false));
+    });
+    if (ok) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+})();
+if (!apiUp) {
+  console.error("[shellboard] API did not come up within 15s — starting web anyway");
+}
+console.log(`[shellboard] api is up on http://127.0.0.1:${apiPort} — starting web`);
+
 // vite: with forwarded args use the binary directly so they arrive verbatim
 if (args.length > 0) {
   start("web", "apps/web", "./node_modules/.bin/vite", args);
