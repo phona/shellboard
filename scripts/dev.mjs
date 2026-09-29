@@ -10,8 +10,17 @@
 // Exposing the web dev server on a non-loopback interface auto-enables token
 // auth (Jupyter/code-server style): a token is generated, printed once, and
 // injected into the API server's env.
+//
+// Two guards exist because orphaned watchers used to make `pnpm dev`
+// un-runnable for days: children are spawned in their own process groups and
+// shutdown kills those groups (SIGTERM, then SIGKILL), so a ^C can never
+// leave a surviving `tsx watch` behind; and if a configured port is already
+// held, startup fails fast naming the holder instead of racing it and dying
+// in a child's EADDRINUSE.
 import { spawn } from "node:child_process";
+import { createServer } from "node:net";
 import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 
 const args = process.argv.slice(2);
 if (args[0] === "--") args.shift();
@@ -37,20 +46,75 @@ if (webHost !== undefined && !isLoopback(webHost) && !process.env.SHELLBOARD_TOK
   console.log(`[shellboard] paste it into the login page; set SHELLBOARD_TOKEN to pin your own.`);
 }
 
+const apiPort = Number(process.env.SHELLBOARD_PORT ?? 7700);
+const webPort = Number(argValue("--port") ?? process.env.SHELLBOARD_WEB_PORT ?? 5173);
+
+/** Resolves the pid holding `port`, or null when it is free (probe bind) or
+    the owner cannot be attributed (another user's process). */
+function portHolder(port) {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", () => {
+      try {
+        const out = execFileSync("ss", ["-ltnp", `sport = :${port}`], { encoding: "utf8" });
+        const pid = /pid=(\d+)/.exec(out)?.[1] ?? null;
+        const cmd = pid ? execFileSync("ps", ["-p", pid, "-o", "args="], { encoding: "utf8" }).trim() : "";
+        resolve({ pid, cmd });
+      } catch {
+        resolve({ pid: null, cmd: "" });
+      }
+    });
+    probe.once("listening", () => {
+      probe.close(() => resolve(null));
+    });
+    probe.listen(port);
+  });
+}
+
+const holders = await Promise.all([portHolder(apiPort), portHolder(webPort)]);
+let blocked = false;
+for (const [port, holder] of [
+  [apiPort, holders[0]],
+  [webPort, holders[1]],
+]) {
+  if (!holder) continue;
+  blocked = true;
+  const who = holder.pid ? `pid ${holder.pid}${holder.cmd ? ` (${holder.cmd})` : ""}` : "another process";
+  console.error(`[shellboard] port ${port} is already in use by ${who}.`);
+}
+if (blocked) {
+  console.error(`[shellboard] stop the old instance first (kill <pid>), or pick another port:
+[shellboard]   SHELLBOARD_PORT=<port> pnpm dev        # API
+[shellboard]   pnpm dev -- --port <port>              # web`);
+  process.exit(1);
+}
+
 const children = new Set();
 let shuttingDown = false;
 
 function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  // Children live in their own process groups (detached), so a plain
+  // SIGTERM here would not reach tsx's descendants — signal the groups,
+  // and SIGKILL anything that ignores the graceful window.
   for (const child of children) {
     try {
-      child.kill("SIGTERM");
+      process.kill(-child.pid, "SIGTERM");
     } catch {
       // already gone
     }
   }
-  process.exit(code);
+  setTimeout(() => {
+    for (const child of children) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    process.exit(code);
+  }, 500);
 }
 
 process.on("SIGINT", () => shutdown(130));
@@ -78,6 +142,9 @@ function start(label, cwd, command, commandArgs) {
     env: process.env,
     shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],
+    // Own process group: shutdown kills the whole subtree (tsx's server
+    // child included) and nothing can orphan a watcher behind our back.
+    detached: process.platform !== "win32",
   });
   children.add(child);
   pipeLabeled(child.stdout, label, console.log);
