@@ -252,7 +252,9 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
       ) : rightTab === "files" ? (
         <FilesPanel data={selected} />
       ) : (
-        <TerminalView data={selected} variant="tool" />
+        // key: remount on session switch — the hook's off-bottom state
+        // (live pill) is component state and must not carry across sessions
+        <TerminalView key={`tool-${selected.session.id}`} data={selected} variant="tool" />
       )}
     </ErrorBoundary>
   ) : (
@@ -320,10 +322,15 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
         <div className="main">
           <main className="center">{centerContent}</main>
           {mobilePanel === "sessions" && (
+            /* Bubble, not capture: a capture-phase setMobilePanel unmounts the
+               drawer mid-dispatch, and React then drops the synthetic bubble
+               dispatch for the already-detached session row — the tap would
+               close the drawer without ever switching. In bubble phase the
+               row's own onClick runs first. */
             <aside
               className="sidebar mobile-drawer"
               aria-label="Sessions"
-              onClickCapture={(event) => {
+              onClick={(event) => {
                 if ((event.target as HTMLElement).closest(".session-item")) {
                   useUi.getState().setMobilePanel("none");
                 }

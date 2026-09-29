@@ -21,23 +21,24 @@ export type TerminalStatus =
 export interface TerminalApi {
   containerRef: RefObject<HTMLDivElement>;
   status: TerminalStatus;
-  /** tmux copy-mode entered through the scroll channel (HISTORY indicator). */
-  historyMode: boolean;
+  /** Viewport sits on the live bottom (false = user is reading history). */
+  atBottom: boolean;
+  /** Snap the viewport back to the live bottom and resume follow. */
+  goLive(): void;
   reconnect(): void;
   sendText(text: string): void;
   /** Sticky mobile Ctrl modifier: the next character is sent as its control code. */
   ctrlArmed: boolean;
   setCtrlArmed(value: boolean): void;
-  /** Enter history mode scrolled one page up (former tmux prefix+[ button). */
+  /** One page up through the local buffer. */
   historyPage(): void;
-  /** Exit copy-mode and return to the live view. */
-  scrollToLive(): void;
   paste(): void;
   /** Multi-line paste gate: set before anything containing newlines runs. */
   pasteConfirmation: { lines: number } | null;
   confirmPaste(): void;
   cancelPaste(): void;
   copySelection(): void;
+  clearSelection(): void;
   fit(): void;
   searchOpen: boolean;
   setSearchOpen(open: boolean): void;
@@ -45,23 +46,25 @@ export interface TerminalApi {
   findPrevious(term?: string): void;
 }
 
-export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
+export function useTerminalWs(path: string): TerminalApi {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
   const searchOptionsRef = useRef<ISearchOptions | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const sendControlRef = useRef<((message: Record<string, unknown>) => void) | null>(null);
   const encoderRef = useRef(new TextEncoder());
   const [status, setStatus] = useState<TerminalStatus>("connecting");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [historyMode, setHistoryMode] = useState(false);
-  const historyModeRef = useRef(false);
   const [pasteConfirmation, setPasteConfirmation] = useState<{ lines: number } | null>(null);
   const pendingPasteRef = useRef<string | null>(null);
   const [ctrlArmed, setCtrlArmedState] = useState(false);
   const ctrlArmedRef = useRef(false);
+  // Live-follow state: false once the user deliberately scrolls up; new
+  // output then stops pulling the viewport down until they return. The
+  // buffer is the real transcript, so off-bottom is knowable exactly.
+  const userPinnedRef = useRef(false);
+  const [atBottom, setAtBottom] = useState(true);
   const [nonce, setNonce] = useState(0);
   const fontSize = useUi((state) => state.fontSize);
   const scrollback = useUi((state) => state.scrollback);
@@ -159,36 +162,106 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
         // no WebGL in this browser — DOM renderer it is
       }
 
-      // Desktop-style selection by default: swallow mouse-reporting modes
-      // (DECSET 1000/1002/1003/1006/1015) and alternate scroll (1007), so
-      // plain drag is a native browser selection and the wheel never degrades
-      // to arrow keys.
-      const isMouseMode = (value: number | number[]): boolean =>
-        (typeof value === "number" ? [value] : value).every((n) =>
-          [1000, 1002, 1003, 1006, 1007, 1015].includes(n),
-        );
-      const swallowMouse = (params: (number | number[])[]): boolean =>
-        params.length > 0 && params.every(isMouseMode);
+      // Buffered pane: the web terminal renders into the MAIN buffer so the
+      // transcript accumulates in local scrollback and scrolls natively.
+      // The primary mechanism is server-side: tmux runs with smcup/rmcup
+      // removed (tmux.ts overrides), so the pane is never wrapped in the
+      // alternate screen and pane scrolling reaches us as LF scrolling.
+      // This strip is the fallback for servers without that override: if a
+      // DECSET 1049 still arrives (tmux wrap), it is swallowed so the pane
+      // still renders into the main buffer — though without the override
+      // tmux's CSI-S scrolling means nothing accumulates. The app's 1049
+      // requests are remembered: a full-screen app (vim, less, codex, Claude
+      // Code's alternate views) owns the viewport, so wheel input is sent
+      // through as arrow keys — the app's own internal scrolling (iTerm2
+      // alternate-scroll semantics). Most such apps never set DECSET 1007.
+      // Mouse reporting (1000/1002/1003/1006/1015) stays swallowed so plain
+      // drag remains a native browser selection.
+      let appAlt = false;
+      const privateModes = (set: boolean) => (params: (number | number[])[]): boolean => {
+        let handled = false;
+        for (const list of params) {
+          for (const p of typeof list === "number" ? [list] : list) {
+            if (p === 1049) {
+              handled = true; // strip alt-screen switching
+              appAlt = set;
+            } else if ([1000, 1002, 1003, 1006, 1015].includes(p)) {
+              handled = true; // keep drag native
+            }
+          }
+        }
+        return handled;
+      };
       // "?" in DECSET/DECRST (CSI ? Ps h / CSI ? Ps l) is the private-parameter
       // prefix (0x3c..0x3f), not an intermediate (0x20..0x2f) — passing it as
       // `intermediates` makes xterm throw at registration.
-      term.parser.registerCsiHandler({ prefix: "?", final: "h" }, swallowMouse);
-      term.parser.registerCsiHandler({ prefix: "?", final: "l" }, swallowMouse);
+      term.parser.registerCsiHandler({ prefix: "?", final: "h" }, privateModes(true));
+      term.parser.registerCsiHandler({ prefix: "?", final: "l" }, privateModes(false));
 
-      // Wheel: tmux owns the scrollback, so forward scroll intents to the
-      // server (it drives tmux copy-mode). Wheel-up (deltaY < 0) means
-      // "towards history" and the server takes positive lines as scroll-up,
-      // so negate. deltaMode 1 (Firefox) reports lines, not pixels.
+      // Off-bottom tracking for the ↓ live pill: every scroll path (native
+      // wheel, scrollbar drag, touch, programmatic) funnels through viewport
+      // changes, and onScroll recomputes from geometry.
+      const syncAtBottom = (): void => {
+        const buf = term.buffer.active;
+        if (buf.type === "alternate") return;
+        const bottom = buf.viewportY >= buf.baseY;
+        userPinnedRef.current = !bottom;
+        setAtBottom(bottom);
+      };
+      term.onScroll(() => {
+        if (term.buffer.active.type === "alternate") return;
+        syncAtBottom();
+      });
+
+      // Live-follow invariant: xterm only advances the viewport with new
+      // output when it already sits at the bottom — one reflow (keyboard
+      // open/close, refit during replay) leaves the user stranded mid-
+      // history while live streams below. Re-anchor after every parsed
+      // write unless the user deliberately scrolled up.
+      term.onWriteParsed(() => {
+        if (!userPinnedRef.current && term.buffer.active.type !== "alternate") {
+          term.scrollToBottom();
+        }
+      });
+
+      // Scroll intent in "towards history is positive" lines. While a
+      // full-screen app owns the viewport the wheel is arrow keys, period —
+      // alternate-scroll semantics (iTerm2); local history above its frame
+      // is stale and must not swallow the wheel. Otherwise a scrollable
+      // buffer scrolls locally — instant, no network — and a quiet plain
+      // pane with nothing to scroll skips.
+      const scrollIntent = (lines: number): void => {
+        if (lines === 0) return;
+        if (appAlt) {
+          const seq = lines > 0 ? "\x1b[A" : "\x1b[B";
+          const n = Math.min(Math.abs(lines), 200);
+          const ws = wsRef.current;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(encoderRef.current.encode(seq.repeat(n)));
+          }
+          return;
+        }
+        const scrollable = term.buffer.active.length > term.rows;
+        if (!scrollable) return;
+        if (lines > 0) userPinnedRef.current = true;
+        term.scrollLines(-lines);
+        const buf = term.buffer.active;
+        const bottom = buf.viewportY >= buf.baseY;
+        if (bottom) userPinnedRef.current = false;
+        setAtBottom(bottom);
+      };
+
+      // Wheel: the local buffer scrolls natively via scrollLines — the
+      // handler exists because xterm 6 does not act on native wheel here.
+      // Wheel-up (deltaY < 0) means "towards history". deltaMode 1 (Firefox)
+      // reports lines, not pixels.
       let wheelAccum = 0;
       let wheelTimer: number | null = null;
       const flushWheel = () => {
         wheelTimer = null;
         const lines = Math.max(-40, Math.min(40, Math.round(wheelAccum)));
         wheelAccum = 0;
-        const ws = wsRef.current;
-        if (lines !== 0 && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "scroll", lines }));
-        }
+        scrollIntent(lines);
       };
       const onWheel = (event: WheelEvent) => {
         event.preventDefault();
@@ -199,9 +272,7 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
           wheelTimer = window.setTimeout(flushWheel, 90);
         }
       };
-      if (wheelScroll) {
-        container.addEventListener("wheel", onWheel, { passive: false, capture: true });
-      }
+      container.addEventListener("wheel", onWheel, { passive: false, capture: true });
 
       // OSC 52: tmux copy commands and inner CLIs arrive here; bridge them
       // into the browser clipboard.
@@ -254,12 +325,194 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
           });
       };
 
-      // Right-click = paste (PuTTY style). Capture phase wins over xterm.
+      // Right-click = paste (PuTTY style) — pointer devices only. On touch,
+      // long-press must reach xterm's own touch-selection gesture; the key
+      // row carries paste there anyway.
       const contextMenu = (event: MouseEvent) => {
         event.preventDefault();
         readAndGate();
       };
-      container.addEventListener("contextmenu", contextMenu, true);
+      if (!window.matchMedia("(hover: none)").matches) {
+        container.addEventListener("contextmenu", contextMenu, true);
+      }
+
+      // Touch selection: xterm 6 has none. A long-press (>500ms, <10px drift)
+      // selects the cell under the finger, dragging extends it (panning is
+      // blocked only while a selection drag is active — a plain swipe keeps
+      // native scrolling), and releasing copies, mirroring the mouse
+      // copy-on-release. All display-layer cell math.
+      let touchStart: { x: number; y: number; at: number } | null = null;
+      let touchAnchor: { col: number; row: number } | null = null;
+      let touchTimer: number | null = null;
+      let lastSwipeY: number | null = null;
+      let swipeAccum = 0;
+      // Momentum: a finger release keeps scrolling with decaying velocity —
+      // the gesture feel of native scrollviews, riding the same channel.
+      // Only samples the swipe path; a selection drag or a second finger
+      // cancels it.
+      const flingSamples: Array<{ t: number; y: number }> = [];
+      let flingTimer: number | null = null;
+      const stopFling = () => {
+        if (flingTimer !== null) {
+          window.clearInterval(flingTimer);
+          flingTimer = null;
+        }
+      };
+      const pixelPerLine = (): number => {
+        const screenEl = container.querySelector(".xterm-screen");
+        if (!screenEl || term.rows === 0) return 0;
+        const h = screenEl.getBoundingClientRect().height;
+        return h === 0 ? 0 : h / term.rows;
+      };
+      // 60Hz-ish ticks, exponential decay, hard cap. Positive velocity =
+      // finger dragged down = into history (matches the drag accumulation).
+      const FLING_TICK_MS = 32;
+      const startFling = (vLinesPerMs: number) => {
+        stopFling();
+        let v = vLinesPerMs;
+        let frac = 0;
+        let budget = 120;
+        flingTimer = window.setInterval(() => {
+          frac += v * FLING_TICK_MS;
+          const lines = Math.trunc(frac);
+          if (lines !== 0) {
+            frac -= lines;
+            budget -= Math.abs(lines);
+            scrollIntent(lines);
+          }
+          v *= 0.9;
+          if (Math.abs(v * FLING_TICK_MS) < 0.1 || budget <= 0) stopFling();
+        }, FLING_TICK_MS);
+      };
+      const cellAt = (x: number, y: number) => {
+        const screenEl = container.querySelector(".xterm-screen");
+        if (!screenEl || term.cols === 0 || term.rows === 0) return null;
+        const r = screenEl.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return null;
+        const col = Math.floor(((x - r.left) / r.width) * term.cols);
+        const row = Math.floor(((y - r.top) / r.height) * term.rows);
+        return {
+          col: Math.max(0, Math.min(term.cols - 1, col)),
+          screenRow: Math.max(0, Math.min(term.rows - 1, row)),
+        };
+      };
+      const applyTouchSelection = (cur: { col: number; screenRow: number }) => {
+        if (!touchAnchor) return;
+        // select() takes absolute buffer rows (viewport row + scroll offset)
+        const a = touchAnchor.row;
+        const b = cur.screenRow;
+        const cols = term.cols;
+        if (b > a || (b === a && cur.col >= touchAnchor.col)) {
+          term.select(touchAnchor.col, a, (b - a) * cols + cur.col - touchAnchor.col + 1);
+        } else {
+          term.select(cur.col, b, (a - b) * cols + touchAnchor.col - cur.col + 1);
+        }
+      };
+
+      const onTouchStart = (event: TouchEvent) => {
+        stopFling();
+        flingSamples.length = 0;
+        const first = event.touches[0];
+        if (!first || event.touches.length !== 1) return;
+        const t = first;
+        touchStart = { x: t.clientX, y: t.clientY, at: Date.now() };
+        lastSwipeY = null;
+        swipeAccum = 0;
+        const cell = cellAt(t.clientX, t.clientY);
+        if (!cell) return;
+        touchAnchor = null;
+        if (touchTimer !== null) window.clearTimeout(touchTimer);
+        touchTimer = window.setTimeout(() => {
+          touchTimer = null;
+          if (!touchStart) return;
+          touchAnchor = { col: cell.col, row: cell.screenRow };
+          term.select(cell.col, cell.screenRow, 1);
+        }, 500);
+      };
+      const onTouchMove = (event: TouchEvent) => {
+        const first = event.touches[0];
+        if (!touchStart || !first || event.touches.length !== 1) return;
+        const t = first;
+        const drift = Math.abs(t.clientX - touchStart.x) + Math.abs(t.clientY - touchStart.y);
+        if (touchTimer !== null && drift > 10) {
+          window.clearTimeout(touchTimer);
+          touchTimer = null;
+        }
+        if (!touchAnchor) {
+          // No selection drag: the swipe scrolls the local buffer through
+          // the same scrollIntent as the wheel — content-follows-finger,
+          // with the xterm viewport as the only scroller.
+          const screenEl = container.querySelector(".xterm-screen");
+          if (!screenEl) return;
+          const r = screenEl.getBoundingClientRect();
+          if (r.height === 0 || term.rows === 0) return;
+          event.preventDefault();
+          const lineH = r.height / term.rows;
+          flingSamples.push({ t: Date.now(), y: t.clientY });
+          if (flingSamples.length > 10) flingSamples.shift();
+          if (lastSwipeY !== null) {
+            // Touch is content-follows-finger, the inverse of the desktop
+            // wheel: dragging DOWN pulls earlier lines into view (scroll-up
+            // on the channel), dragging UP returns towards live.
+            swipeAccum += (t.clientY - lastSwipeY) / lineH;
+            const lines = Math.trunc(swipeAccum);
+            if (lines !== 0) {
+              swipeAccum -= lines;
+              scrollIntent(lines);
+            }
+          }
+          lastSwipeY = t.clientY;
+          return;
+        }
+        // a selection drag owns the gesture — panning would fight it
+        event.preventDefault();
+        const cur = cellAt(t.clientX, t.clientY);
+        if (cur) applyTouchSelection(cur);
+      };
+      const onTouchEnd = () => {
+        lastSwipeY = null;
+        swipeAccum = 0;
+        if (touchTimer !== null) {
+          window.clearTimeout(touchTimer);
+          touchTimer = null;
+        }
+        if (touchAnchor) {
+          const selection = term.getSelection();
+          if (selection) {
+            void navigator.clipboard.writeText(selection).catch(() => {});
+          }
+        } else {
+          if (touchStart && Date.now() - touchStart.at < 300) {
+            term.clearSelection();
+          }
+          // Release velocity decides whether the swipe keeps moving: the
+          // momentum tail of a flick continues over the same channel.
+          const last = flingSamples[flingSamples.length - 1];
+          if (last) {
+            let first = last;
+            const now = Date.now();
+            for (const s of flingSamples) {
+              if (now - s.t <= 120) {
+                first = s;
+                break;
+              }
+            }
+            const dt = last.t - first.t;
+            const pxl = pixelPerLine();
+            if (dt >= 16 && pxl > 0) {
+              // Finger dragged DOWN => positive velocity => into history.
+              const vLines = (last.y - first.y) / dt / pxl;
+              if (Math.abs(vLines) > 0.05) startFling(vLines);
+            }
+          }
+        }
+        flingSamples.length = 0;
+        touchStart = null;
+        touchAnchor = null;
+      };
+      container.addEventListener("touchstart", onTouchStart, { passive: true });
+      container.addEventListener("touchmove", onTouchMove, { passive: false });
+      container.addEventListener("touchend", onTouchEnd, true);
 
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== "keydown") return true;
@@ -284,15 +537,15 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
           return false;
         }
         if (matchesBinding(event, KEYBINDINGS.terminalBottom)) {
-          sendControlRef.current?.({ type: "scroll-bottom" });
+          term.scrollToBottom();
           return false;
         }
         if (matchesBinding(event, KEYBINDINGS.terminalPageUp)) {
-          sendControlRef.current?.({ type: "scroll", lines: term.rows - 2 });
+          term.scrollPages(-1);
           return false;
         }
         if (matchesBinding(event, KEYBINDINGS.terminalPageDown)) {
-          sendControlRef.current?.({ type: "scroll", lines: -(term.rows - 2) });
+          term.scrollPages(1);
           return false;
         }
         return true;
@@ -328,13 +581,6 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
         }
         sendResize();
       };
-      sendControlRef.current = (message) => {
-        const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(message));
-        }
-      };
-
       const connect = () => {
         if (disposed) return;
         setStatus(attempt === 0 ? "connecting" : "reconnecting");
@@ -350,11 +596,6 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
         ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
             term.write(new Uint8Array(event.data));
-            // tmux re-shows its copy-mode selection cursor on every redraw;
-            // keep the terminal cursorless while viewing frozen history
-            if (historyModeRef.current) {
-              term.write("\x1b[?25l");
-            }
             return;
           }
           try {
@@ -367,13 +608,6 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
             } else if (message.type === "ended") {
               remoteEnded = true;
               setStatus("ended");
-            } else if (message.type === "copy-mode") {
-              setHistoryMode(message.active === true);
-              historyModeRef.current = message.active === true;
-              // restore the cursor when back to the live view
-              if (message.active !== true) {
-                term.write("\x1b[?25h");
-              }
             }
           } catch {
             // non-JSON control frame
@@ -394,20 +628,31 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
       const unsubscribeTheme = subscribeTheme(() => {
         term.options.theme = readTerminalTheme();
       });
+      // Keepalive: proxied paths (Cloudflare) drop idle WebSockets after
+      // ~100s, and every drop used to cost a reconnect. The server pongs.
+      const pingTimer = window.setInterval(() => {
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" }));
+        }
+      }, 25000);
       term.focus();
       connect();
 
       cleanup = () => {
         disposed = true;
+        stopFling();
         if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
         container.removeEventListener("contextmenu", contextMenu, true);
         container.removeEventListener("mouseup", onMouseUp, true);
-        if (wheelScroll) {
-          container.removeEventListener("wheel", onWheel, { capture: true });
-          if (wheelTimer !== null) window.clearTimeout(wheelTimer);
-        }
+        container.removeEventListener("touchstart", onTouchStart);
+        container.removeEventListener("touchmove", onTouchMove);
+        container.removeEventListener("touchend", onTouchEnd, true);
+        container.removeEventListener("wheel", onWheel, { capture: true });
+        if (wheelTimer !== null) window.clearTimeout(wheelTimer);
         observer.disconnect();
         unsubscribeTheme();
+        window.clearInterval(pingTimer);
         wsRef.current?.close();
         term.dispose();
         termRef.current = null;
@@ -420,7 +665,7 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     };
     // scrollback changes require a fresh Terminal instance; fontSize must not
     // be here — it applies live below, without dropping the PTY
-  }, [path, nonce, scrollback, sendResize, wheelScroll]);
+  }, [path, nonce, scrollback, sendResize]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -437,12 +682,7 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
   const reconnect = useCallback(() => setNonce((value) => value + 1), []);
 
   const historyPage = useCallback(() => {
-    const rows = termRef.current?.rows ?? 30;
-    sendControlRef.current?.({ type: "scroll", lines: Math.max(3, rows - 2) });
-  }, []);
-
-  const scrollToLive = useCallback(() => {
-    sendControlRef.current?.({ type: "scroll-bottom" });
+    termRef.current?.scrollPages(-1);
   }, []);
 
   const sendText = useCallback((text: string) => {
@@ -486,6 +726,10 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     setPasteConfirmation(null);
   }, []);
 
+  const clearSelection = useCallback(() => {
+    termRef.current?.clearSelection();
+  }, []);
+
   const copySelection = useCallback(() => {
     const selection = termRef.current?.getSelection();
     if (!selection) return;
@@ -508,21 +752,30 @@ export function useTerminalWs(path: string, wheelScroll = false): TerminalApi {
     search.findPrevious(term, searchOptionsRef.current ?? undefined);
   }, []);
 
+  const goLive = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    userPinnedRef.current = false;
+    term.scrollToBottom();
+    setAtBottom(true);
+  }, []);
+
   return {
     containerRef,
     status,
-    historyMode,
+    atBottom,
+    goLive,
     reconnect,
     sendText,
     ctrlArmed,
     setCtrlArmed,
     historyPage,
-    scrollToLive,
     paste,
     pasteConfirmation,
     confirmPaste,
     cancelPaste,
     copySelection,
+    clearSelection,
     fit,
     searchOpen,
     setSearchOpen,

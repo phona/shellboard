@@ -4,40 +4,23 @@ import { WebSocket } from "ws";
 export type ClientControlMessage =
   | { type: "init"; cols?: number; rows?: number }
   | { type: "resize"; cols?: number; rows?: number }
-  | { type: "scroll"; lines?: number }
-  | { type: "scroll-bottom" }
   | { type: "ping" };
 
 export type ServerControlMessage =
   | { type: "taken-over" }
   | { type: "ended" }
-  | { type: "pong" }
-  | { type: "copy-mode"; active: boolean };
+  | { type: "pong" };
 
 export function parseControlMessage(data: Buffer): ClientControlMessage | null {
   try {
     const parsed = JSON.parse(data.toString("utf8")) as Partial<ClientControlMessage>;
-    if (
-      parsed.type === "init" ||
-      parsed.type === "resize" ||
-      parsed.type === "scroll" ||
-      parsed.type === "scroll-bottom" ||
-      parsed.type === "ping"
-    ) {
+    if (parsed.type === "init" || parsed.type === "resize" || parsed.type === "ping") {
       return parsed as ClientControlMessage;
     }
     return null;
   } catch {
     return null;
   }
-}
-
-export function clampLines(value: number | undefined): number {
-  if (value === undefined || !Number.isFinite(value)) return 0;
-  const rounded = Math.round(value);
-  if (rounded > 60) return 60;
-  if (rounded < -60) return -60;
-  return rounded;
 }
 
 export function sendControl(ws: WebSocket, message: ServerControlMessage): void {
@@ -52,11 +35,12 @@ export function clampSize(value: number | undefined, fallback: number): number {
 }
 
 export interface WireOptions {
-  onScroll?: (lines: number) => void;
   /** Receives binary keystrokes; defaults to writing straight to the PTY. */
   onInput?: (data: Buffer) => void;
-  /** "Jump to bottom": exit copy-mode if active. */
-  onBottom?: () => void;
+  /** Resolves with an optional seed payload (connect-time history). PTY
+      output is buffered until it resolves, the seed is sent first, then the
+      buffered live bytes — wire order stays: old content, then new. */
+  holdOutputUntil?: Promise<Buffer | null>;
 }
 
 /**
@@ -70,7 +54,29 @@ export function wirePtyToSocket(
   options: WireOptions = {},
 ): void {
   const writeInput = options.onInput ?? ((data: Buffer) => pty.write(data));
+  let hold = options.holdOutputUntil !== undefined;
+  let held: Buffer[] = [];
+  if (hold) {
+    void options.holdOutputUntil!.then((seed) => {
+      hold = false;
+      if (ws.readyState !== WebSocket.OPEN) {
+        held = [];
+        return;
+      }
+      if (seed !== null && seed.length > 0) {
+        ws.send(seed, { binary: true });
+      }
+      for (const chunk of held) {
+        ws.send(chunk, { binary: true });
+      }
+      held = [];
+    });
+  }
   pty.onData((data) => {
+    if (hold) {
+      held.push(Buffer.from(data));
+      return;
+    }
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(data, { binary: true });
     }
@@ -92,11 +98,6 @@ export function wirePtyToSocket(
       } catch {
         // pane/session may be gone; tmux resizes on next attach
       }
-    } else if (message.type === "scroll") {
-      const lines = clampLines(message.lines);
-      if (lines !== 0) options.onScroll?.(lines);
-    } else if (message.type === "scroll-bottom") {
-      options.onBottom?.();
     } else if (message.type === "ping") {
       sendControl(ws, { type: "pong" });
     }

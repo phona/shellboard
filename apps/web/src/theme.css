@@ -589,6 +589,30 @@ button:focus-visible {
   background: var(--term-bg);
 }
 
+/* Off-bottom indicator: floats over the terminal's bottom-right corner —
+   one tap anywhere on it resumes follow (the only touch path back). */
+.live-pill {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 12px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: var(--accent-text);
+  font-size: 12px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+
+.live-pill:hover {
+  opacity: 0.9;
+}
+
 .terminal-head {
   display: flex;
   align-items: center;
@@ -622,10 +646,12 @@ button:focus-visible {
   min-height: 0;
   padding: 8px 10px;
   background: var(--term-bg);
-  /* wheel scrolling is delegated to tmux; keep touch drags from scrolling
-     the page and from chaining past the terminal */
+  /* The terminal owns its gestures: wheel is routed by the scroll-intent
+     handler, and touch swipes are content-follows-finger — pan-y would let
+     the browser claim the vertical pan and cancel the touchmove stream
+     mid-swipe on real devices. contain keeps the page from rubber-banding. */
   overscroll-behavior: contain;
-  touch-action: pan-y;
+  touch-action: none;
 }
 
 .terminal-host .xterm {
@@ -710,37 +736,6 @@ button:focus-visible {
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--text-muted);
-}
-
-/* ---------- history pill ---------- */
-
-.history-pill {
-  position: absolute;
-  right: 16px;
-  bottom: 14px;
-  z-index: 5;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  opacity: 0.88;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  box-shadow: var(--shadow);
-}
-
-.history-pill:hover {
-  opacity: 1;
-  color: var(--text);
-}
-
-.history-pill .pill-action {
-  color: var(--accent);
-  font-weight: 600;
 }
 
 /* ---------- upload progress pill ---------- */
@@ -1696,7 +1691,8 @@ button:focus-visible {
 }
 
 /* Bottom bar on phones is only the terminal key row (.term-keys); pane
-   toggles live in the top bar. Toasts clear the key row height. */
+   toggles live in the top bar. Toasts and the live pill clear the key row
+   height. */
 @media (max-width: 760px) {
   .toast-stack {
     left: 16px;

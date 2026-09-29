@@ -61,7 +61,7 @@ Structured View / Conversation abstraction / Tool-call renderer
 Prompt management / Agent planner / Agent orchestration / Subagent protocol
 MCP manager / Memory / embeddings / vector DB
 Agent-specific transcript parser
-自研 terminal emulator / capture-pane 终端重建
+自研 terminal emulator / 用 capture-pane 重建终端语义(仅 D7 历史种子的字节透传例外)
 ```
 
 也不试图理解:
@@ -217,26 +217,27 @@ activity ≥ 10s             → idle
 
 每个 session 服务端至多一个 PTY。第二个客户端 attach 时:旧 PTY 断开,新 PTY attach(Take Over)。不做协同、不做镜像、不做输出回放。
 
+
 ### D5 连接生命周期
 
 WebSocket 断开 / 浏览器关闭 → 只杀 node-pty(tmux client),不碰 tmux session,Agent 继续运行。重开 → 新 PTY 重新 attach。**Web terminal lifecycle ≠ Agent session lifecycle**,必须有集成测试。
 
-已知 UX 限制:重连后 xterm.js 只有当前屏,历史输出在 tmux copy-mode 里。M5 提供 History 按钮向 PTY 写入 prefix+`[`,并在文档写明。
+重连(浏览器标签存活)时客户端缓冲无损,滚动历史连续;刷新/标签被浏览器丢弃后,由 D7 的**接入历史种子**恢复 tmux 内的历史(默认 ≈5000 行,含颜色);更早或需要完整原文时走 `tmux -L shellboard attach`(history-limit 50000)。
 
 ### D6 用户主动的路径注入(Send to terminal)
 
 Shellboard 不解析终端状态、不自主发起任何 PTY 输入(见开头红线)。唯一 carve-out 与 History 按钮同类:**用户显式点击**触发的 `tmux send-keys -l -- <绝对路径>`——纯文本、无换行、不回车,字节与键盘输入不可区分,提交永远由用户完成。禁止任何变体:自动粘贴、定时发送、带 `Enter`、读取屏幕来决定时机。"现在能不能打字"这个问题要么读屏(禁止)要么瞎猜(会打坏 vim/半行命令),所以时机责任永远在用户:终端就在眼前,点击前可见。
 
-### D7 滚动通道与 alternate screen
+### D7 缓冲区 pane 与滚动(no-alt-screen attach + 接入历史种子)
 
-Web 端滚轮不走 xterm.js 本地回滚,而是发 `{scroll, lines}` 控制消息,由服务端驱动 tmux。唯一面向用户的滚动通道,不含任何 agent 语义:
+live 画面的传输是忠实的字节搬运,累积机制在 **tmux 侧**:shellboard 的 tmux 以 `terminal-overrides` 移除 `smcup`/`rmcup`/`indn`(注意用 terminfo 小写名,tmux 内部名 Smcup/Rmcup 在 overrides 中不匹配),web 客户端因此被 tmux 当作**无备用屏的普通滚动终端**:
 
-- **普通 pane**(历史在 tmux scrollback,如 Claude Code、shell):`copy-mode -H` + `scroll-up/down`,到底自动退出 copy-mode,客户端靠 `copy-mode` 控制帧显示 HISTORY 条。
-- **alternate screen pane**(如 Codex 0.157+ 的全屏 TUI):pane 在 tmux 里没有任何历史,copy-mode 是死路。这类应用通过 DECSET 1007(alternate scroll)声明"滚轮请给我方向键",服务端把滚动意图翻译成等量的 `send-keys -N <n> Up/Down`,应用自己解释(浏览模式滚动、列表移动)。查询用的是 tmux 状态 `#{alternate_on}`,不是解析终端字节。
-
-tmux 的 `mouse` 选项归属交互模型(见 tmux.ts 注释),滚动通道不依赖它。
-
-Codex 的内置默认启动命令带 `-c tui.alternate_screen=never`(见 contracts 的 `AGENT_DEFAULT_COMMAND`):alt screen 模式下它的转写不进 tmux 历史,滚轮只能退化成方向键翻译;inline 模式让它和其它 inline agent 一样走 copy-mode 路径。旧会话沿用创建时落库的命令。
+- 无 1049 包裹,pane 渲染进客户端**主缓冲**;pane 滚动以底边距 LF 到达(带 indn 时 tmux 会发 CSI S scroll-up,其语义是丢弃——历史上 v2 客户端剥离 1049 后转录仍无法累积,根因即此)。
+- 转录在本地 scrollback 天然生长;滚动/搜索/选择全部纯本地、零网络往返、零重放(缓冲从字节流锁定步进生长,不存在任何重放)。
+- **滚动路由**:客户端跟踪 DECSET 1049(overrides 生效时不会出现;若出现说明 overrides 未生效)——全屏应用拥有视口时滚轮等量转为方向键作为普通输入(iTerm2 alternate-scroll 语义);普通 pane 滚本地缓冲。桌面滚轮、移动端滑动(内容跟手指+惯性)、PageUp/Down、Ctrl+End 全部本地即时;`touch-action: none` 保证真机上浏览器不抢手势。
+- **鼠标报告**(1000/1002/1003/1006/1015)被吞噬:普通拖拽保持浏览器原生选择。
+- **接入历史种子**(唯一 capture-pane carve-out,用户已批准):tmux attach 协议只发当前屏,冷启动页面将无历史可滚。桥接在 attach 后等首个重绘帧(屏障:tmux 已按本客户端尺寸重排),执行一次 `capture-pane -p -e -T -S -4990 -E -1`(可见屏之上的历史,含 SGR 颜色,上限对齐客户端 scrollback),**字节原样**先于 live 流发给接入客户端;服务端不解析、不落盘、不进日志、无其他消费方。`-E -1` 精确止于可见屏之上,与随后的 attach 重绘无缝拼合。
+- **已知边界**:全屏应用(vim/less)运行期间帧不污染 scrollback(经典 no-alt-screen 行为,退出后恢复原画面);tmux 对爆炸式输出会合并刷新(如 `seq 1 300` 一瞬打完),中间行不逐行到达——真实 agent 输出速度不受影响;接缝处(捕获与放行间隙)繁忙 pane 可能重复个别行。
 
 ## 5. API Surface(全集)
 
@@ -274,11 +275,13 @@ GET    /api/sessions/:id/uploads              # 缓冲区列表(最新在前)
 DELETE /api/sessions/:id/uploads?name=        # 删除缓冲区文件
 POST   /api/sessions/:id/uploads/send         # 把绝对路径打进 agent pane(D6,无换行不回车)
 
+POST   /api/notify                            # agent hook 上报通知(notify token / cookie,见 D8)
+
 WS     /api/sessions/:id/tools/terminal       # session.cwd 下 bash,不落 tmux,随浏览器关闭结束
 
 GET    /api/fs/directories?path=              # 只读目录浏览(项目路径选择器),仅列目录名,受统一鉴权保护
 
-WS     /api/events                            # SessionCreated/Updated/Deleted/ActivityChanged
+WS     /api/events                            # SessionCreated/Updated/Deleted/ActivityChanged/Notify
 ```
 
 禁止任何形式的通用 exec endpoint。
@@ -293,6 +296,7 @@ Web Shell + 文件系统写 + Git 写
 
 - 默认监听 `127.0.0.1`;远程访问推荐 Cloudflare Tunnel 或 Tailscale,不裸暴露公网。
 - 应用层:token 登录 + HttpOnly cookie、WebSocket Origin 校验、CSRF 保护、全路由(含 WS upgrade)鉴权。绑定非回环地址且未设置 `SHELLBOARD_TOKEN` 时,启动自动生成随机 token 并打印(Jupyter/code-server 模式),不允许无鉴权暴露。
+- `/api/notify` 用独立的 notify token:服务端启动时生成并落盘 `~/.shellboard/notify-token`(0600),`shellboard-notify` CLI 自动读取;web 端走 cookie。该路由会触发用户 hook 脚本,即使 cookie auth 关闭(本地回环)也要求 token,防浏览器 drive-by POST。
 - 所有 path 经 `resolve` + 逐段 `realpath` 验证仍位于 session `cwd` 内,拒绝 `../` 与 symlink escape(见 D1)。
 - 所有执行动作走显式 service(SessionService / GitService / FileService),参数经 Zod 校验;Custom session command 仅在用户主动创建时允许,不暴露成通用远程 exec。
 - 日志只记录:session lifecycle、PTY connect/disconnect、tmux errors、git 操作、文件写删、auth 事件。**绝不记录终端输入输出,默认不偷偷做 transcript。**

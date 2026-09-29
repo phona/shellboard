@@ -28,8 +28,6 @@ export function TerminalView({
     variant === "agent"
       ? `/api/sessions/${session.id}/terminal`
       : `/api/sessions/${session.id}/tools/terminal`,
-    // tmux owns the agent scrollback; the tool shell scrolls natively
-    variant === "agent",
   );
   const [fullscreen, setFullscreen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
@@ -88,9 +86,6 @@ export function TerminalView({
     variant === "agent" && exited
       ? "session exited"
       : STATUS_BANNER[terminal.status];
-
-  const showHistoryBar =
-    variant === "agent" && terminal.historyMode && !banner && terminal.status === "connected";
 
   return (
     <div className={fullscreen ? "terminal-view fullscreen" : "terminal-view"}>
@@ -251,18 +246,6 @@ export function TerminalView({
         </Modal>
       )}
 
-      {showHistoryBar && (
-        <button
-          type="button"
-          className="history-pill"
-          onClick={terminal.scrollToLive}
-          title="Viewing history — click to return to live (Ctrl+End)"
-        >
-          HISTORY
-          <span className="pill-action">↓ live</span>
-        </button>
-      )}
-
       {banner && (
         <div className={`terminal-banner ${exited ? "ended" : terminal.status}`}>
           <span>{banner}</span>
@@ -277,6 +260,19 @@ export function TerminalView({
             </button>
           )}
         </div>
+      )}
+
+      {/* Off-bottom indicator: reading history while live streams below.
+          One tap resumes follow — there is no other way back on touch. */}
+      {!terminal.atBottom && !banner && (
+        <button
+          type="button"
+          className="live-pill"
+          onClick={terminal.goLive}
+          title="Jump back to the live view (Ctrl+End)"
+        >
+          ↓ live
+        </button>
       )}
 
       {menu && (
@@ -343,7 +339,8 @@ export function TerminalView({
       {/* AoE-style accessory key row: soft keyboards have no Esc/Ctrl/arrows,
           which makes a shell unusable without it. Bytes go through the same
           WS path as typed input; mousedown preventDefault keeps the soft
-          keyboard open. */}
+          keyboard open. Copying is the terminal's own long-press selection
+          with copy-on-release, over the full local scrollback. */}
       {isMobile && terminal.status === "connected" && !exited && (
         <div className="term-keys" role="group" aria-label="Terminal keys">
           <button
@@ -410,3 +407,4 @@ export function TerminalView({
     </div>
   );
 }
+

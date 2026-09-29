@@ -7,7 +7,7 @@ Shellboard is not an agent platform. Do not add abstractions for agent conversat
 Violating any of these is a design bug, not a style issue:
 
 - Shellboard manages shells, not agents. The native CLI is the canonical agent interface.
-- Terminal bytes are opaque. Never parse ANSI, cursor state, prompts, or agent semantics; never reconstruct terminal output (no capture-pane scraping).
+- Terminal bytes are opaque. Never parse ANSI, cursor state, prompts, or agent semantics; never reconstruct terminal output. The single carve-out is the connect-time history seed (terminal/bridge.ts, ARCHITECTURE.md D7): `tmux capture-pane -e` bytes forwarded verbatim to the connecting client — no parsing, no logging, no persistence, no other consumer.
 - Observers may report status but must never control session behavior.
 - The web terminal lifecycle is not the agent session lifecycle. Closing the browser or dropping the WebSocket must never kill the tmux session or the agent process.
 - Session (SQLite) is intent; SessionRuntime (tmux) is fact. tmux is the source of truth — reconcile before acting, never trust a DB flag that says a session is running.

@@ -59,6 +59,23 @@ export class TmuxService {
   }
 
   /**
+   * Resolves a pane id (the TMUX_PANE value a process sees inside the pane)
+   * to its tmux session name — how notify events from agent hooks are
+   * attributed to a shellboard session (D8). A tmux state query, like
+   * #{alternate_on} in D7; no terminal bytes involved.
+   */
+  async sessionNameForPane(paneId: string): Promise<string | null> {
+    const result = await execa(
+      "tmux",
+      this.args("display-message", "-p", "-t", paneId, "#{session_name}"),
+      { reject: false },
+    );
+    if (result.failed) return null;
+    const name = result.stdout.trim();
+    return name.length > 0 ? name : null;
+  }
+
+  /**
    * Starts a detached session. `-f /dev/null` only applies when this command
    * boots a fresh tmux server: it guarantees a config-free, deterministic
    * server (user tmux.conf must not affect the shellboard socket, D2).
@@ -87,19 +104,31 @@ export class TmuxService {
    * - status off: the green status line is dead weight in the web UI — the
    *   sidebar already shows session identity, the web chrome shows time.
    * - mouse off: plain drag stays native browser selection (desktop-style);
-   *   wheel scrolling is routed to tmux through the server-side scroll
-   *   channel instead of tmux mouse reporting.
+   *   the web client scrolls its local buffer (D7) — no mouse reporting.
    * - set-clipboard + Ms override: tmux copy commands and inner CLIs still
    *   push to the browser clipboard via OSC 52.
    */
   async applySessionOptions(name: string): Promise<void> {
     await execa("tmux", this.args("set-option", "-t", name, "monitor-activity", "on"));
+    // Generous scrollback for real `tmux attach` users.
+    await execa("tmux", this.args("set-option", "-t", name, "history-limit", "50000"));
     await execa("tmux", this.args("set-option", "-t", name, "status", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "mouse", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "set-clipboard", "on"));
     // Many distros ship xterm-256color terminfo without the Ms (set
     // clipboard) capability, which silently disables set-clipboard — tmux
-    // never emits OSC 52. Assert it explicitly.
+    // never emits OSC 52. Assert it explicitly. smcup/rmcup/indn are
+    // removed (D7): the web terminal is a plain scrolling terminal without
+    // an alternate screen. With smcup present, tmux wraps the pane in 1049;
+    // and for pane scrolling it emits indn (CSI S, scroll-up), whose
+    // semantics DISCARD the lines leaving the top — with either, the client
+    // could never accumulate scrollback. Without them, tmux repaints pane
+    // updates onto the normal screen and scrolls with plain LF at the
+    // bottom margin, so the transcript accumulates in the web client's
+    // local scrollback, and full-screen pane apps paint over the screen
+    // without polluting it (their exit restores the transcript).
+    // Capability names are terminfo lowercase — tmux's internal names
+    // (Smcup/Rmcup) do not match in overrides.
     await execa(
       "tmux",
       this.args(
@@ -107,7 +136,7 @@ export class TmuxService {
         "-t",
         name,
         "terminal-overrides",
-        "xterm*:Ms=\\E]52;%p1%s;%p2%s\\007",
+        "xterm*:Ms=\\E]52;%p1%s;%p2%s\\007,xterm*:smcup@,xterm*:rmcup@,xterm*:indn@",
       ),
     );
   }
@@ -121,6 +150,29 @@ export class TmuxService {
 
   async killServer(): Promise<void> {
     await execa("tmux", this.args("kill-server"), { reject: false });
+  }
+
+  /** Forces the pane's application to repaint: one column narrower and back.
+      A control-mode connection only sees bytes produced while subscribed, so
+      the output tap fires this after every (re)connect — the repaint fills
+      the mirror with the current screen (and any hole since a reconnect).
+      Apps must handle resize to be usable at all, so this is safe; a
+      momentary 1-column reflow is visible to a manually attached client. */
+  async nudgeRepaint(name: string): Promise<void> {
+    const probe = await execa(
+      "tmux",
+      this.args("display-message", "-p", "-t", name, "#{pane_width} #{pane_height}"),
+      { reject: false },
+    );
+    if (probe.failed) return;
+    const [w, h] = probe.stdout.trim().split(" ").map(Number);
+    if (!w || !h || w <= 2) return;
+    await execa("tmux", this.args("resize-pane", "-t", name, "-x", String(w - 1), "-y", String(h)), {
+      reject: false,
+    });
+    await execa("tmux", this.args("resize-pane", "-t", name, "-x", String(w), "-y", String(h)), {
+      reject: false,
+    });
   }
 
   /**
@@ -140,160 +192,5 @@ export class TmuxService {
     }
   }
 
-  /**
-   * Scrolls a session without mouse reporting: copy-mode entry and scrolling
-   * are one chained tmux invocation; re-entering copy-mode does not reset
-   * the position (verified on tmux 3.7), so no state pre-check is needed.
-   * Wheel requests are coalesced per session, and scrolls share a FIFO with
-   * cancelCopyMode so cancels can never overtake a pending scroll.
-   *
-   * Panes in the alternate screen (Codex 0.157+ TUI, pagers) keep no tmux
-   * scrollback for copy-mode to move, and their DECSET 1007 (alternate
-   * scroll) request asks the terminal to deliver wheel intents as arrow
-   * keys instead — so there the channel translates to arrow keys.
-   */
-  private readonly scrollPending = new Map<string, number>();
-  private readonly scrollDraining = new Set<string>();
-  private readonly opQueues = new Map<string, Promise<void>>();
-  private readonly copyModeListeners = new Map<string, (active: boolean) => void>();
-  /** Alternate-screen state observed at the pane's last scroll. */
-  private readonly altScreen = new Map<string, boolean>();
 
-  /**
-   * Whether a scroll-up may still put this pane into copy-mode. False only
-   * once a scroll has observed the pane in the alternate screen; unknown
-   * panes conservatively report true so the bridge keeps buffering input
-   * until tmux confirms the actual mode.
-   */
-  mayEnterCopyMode(name: string): boolean {
-    return this.altScreen.get(name) !== true;
-  }
-
-  /** Notified whenever a scroll operation enters or leaves copy-mode. */
-  setCopyModeListener(name: string, listener: (active: boolean) => void): void {
-    this.copyModeListeners.set(name, listener);
-  }
-
-  clearCopyModeListener(name: string): void {
-    this.copyModeListeners.delete(name);
-  }
-
-  private notifyCopyMode(name: string, active: boolean): void {
-    this.copyModeListeners.get(name)?.(active);
-  }
-
-  scroll(name: string, lines: number): void {
-    const merged = Math.max(-60, Math.min(60, (this.scrollPending.get(name) ?? 0) + lines));
-    this.scrollPending.set(name, merged);
-    if (this.scrollDraining.has(name)) return;
-    this.scrollDraining.add(name);
-    void this.enqueue(name, async () => {
-      this.scrollDraining.delete(name);
-      await this.drainScroll(name);
-    });
-  }
-
-  cancelCopyMode(name: string): Promise<void> {
-    return this.enqueue(name, async () => {
-      await execa("tmux", this.args("send-keys", "-t", name, "-X", "cancel"), {
-        reject: false,
-      });
-      this.notifyCopyMode(name, false);
-    });
-  }
-
-  async isInCopyMode(name: string): Promise<boolean> {
-    const result = await execa(
-      "tmux",
-      this.args("display-message", "-p", "-t", name, "#{pane_in_mode}"),
-    );
-    return result.stdout.trim() === "1";
-  }
-
-  private async isAlternateScreen(name: string): Promise<boolean> {
-    const result = await execa(
-      "tmux",
-      this.args("display-message", "-p", "-t", name, "#{alternate_on}"),
-    );
-    return result.stdout.trim() === "1";
-  }
-
-  private enqueue(name: string, task: () => Promise<void>): Promise<void> {
-    const prev = this.opQueues.get(name) ?? Promise.resolve();
-    const next = prev.then(task, task);
-    this.opQueues.set(name, next);
-    void next.catch(() => {});
-    void next.finally(() => {
-      if (this.opQueues.get(name) === next) this.opQueues.delete(name);
-    });
-    return next;
-  }
-
-  private async drainScroll(name: string): Promise<void> {
-    for (;;) {
-      const lines = this.scrollPending.get(name) ?? 0;
-      if (lines === 0) {
-        this.scrollPending.delete(name);
-        return;
-      }
-      this.scrollPending.set(name, 0);
-      try {
-        await this.applyScroll(name, lines);
-      } catch {
-        // dead session — drop the rest
-        this.scrollPending.delete(name);
-        return;
-      }
-    }
-  }
-
-  private async applyScroll(name: string, lines: number): Promise<void> {
-    const alternate = await this.isAlternateScreen(name);
-    this.altScreen.set(name, alternate);
-    if (alternate) {
-      // The app owns the transcript here; DECSET 1007 semantics are "wheel
-      // becomes arrows" (Codex itself enables 1007 whenever it runs without
-      // tmux mouse reporting). |lines| arrow presses scroll the same number
-      // of rows, so page-sized requests stay correct without key names.
-      await execa(
-        "tmux",
-        this.args(
-          "send-keys",
-          "-t",
-          name,
-          "-N",
-          String(Math.abs(lines)),
-          lines > 0 ? "Up" : "Down",
-        ),
-      );
-      this.notifyCopyMode(name, false);
-      return;
-    }
-    if (lines > 0) {
-      // -H hides the copy-mode position indicator (e.g. [40/451]) — the web
-      // HISTORY bar already conveys the mode. Re-entering copy-mode does not
-      // reset the scroll position (verified on tmux 3.7).
-      await execa(
-        "tmux",
-        this.args("copy-mode", "-H", "-t", name, ";", "send-keys", "-t", name, "-X", "-N", String(lines), "scroll-up"),
-      );
-      this.notifyCopyMode(name, true);
-      return;
-    }
-    await execa("tmux", this.args("send-keys", "-t", name, "-X", "-N", String(-lines), "scroll-down"), {
-      reject: false,
-    });
-    const position = await execa(
-      "tmux",
-      this.args("display-message", "-p", "-t", name, "#{scroll_position}"),
-      { reject: false },
-    );
-    if (position.stdout.trim() === "0") {
-      // tmux's own lifecycle: back at the bottom, copy-mode exits
-      await execa("tmux", this.args("send-keys", "-t", name, "-X", "cancel"), {
-        reject: false,
-      });
-      this.notifyCopyMode(name, false);
-    }
-  }
 }
