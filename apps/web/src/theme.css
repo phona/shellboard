@@ -39,6 +39,10 @@
   --surface-selected: #1f3a5f;
   --border: #30363d;
   --text: #e6edf3;
+  /* Lifted from #8b949e: on --surface-selected (#1f3a5f) the old value is
+     3.7:1, below the 4.5:1 AA floor for the selected session's meta line
+     (agent/branch/relative time — the most load-bearing row in the app).
+     #9da7b3 measures 4.71:1 there and 7+:1 on --bg/--surface. */
   --text-muted: #9da7b3;
   --accent: #2f81f7;
   --accent-strong: #1f6feb;

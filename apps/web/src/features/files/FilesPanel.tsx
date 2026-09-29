@@ -377,6 +377,9 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
             <button type="button" onClick={() => setConfirmRemove(null)}>
               Cancel
             </button>
+            {/* Disabled while in flight: a double-click would fire the
+                destructive request twice and surface a confusing failure
+                for the second one. */}
             <button
               type="button"
               className="btn danger"
