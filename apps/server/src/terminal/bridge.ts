@@ -11,9 +11,12 @@ interface AttachedClient {
   pty: nodePty.IPty;
 }
 
-/** Seed size cap: the web client's default scrollback is 5000 lines, so
-    fetching more is wasted WAN bytes (the head is discarded on render). */
-const SEED_MAX_LINES = 4990;
+/** Seed size when the client doesn't declare one: the web client's default
+    scrollback is 5000 lines, so fetching more is wasted WAN bytes (the head
+    is discarded on render). A client that declares deeper scrollback gets a
+    deeper seed, minus a small margin under its buffer size. */
+const DEFAULT_SEED_LINES = 4990;
+const MAX_SEED_LINES = 49990;
 /** The attach repaint normally lands in well under a second; past this the
     session is presumed dead and we seed without the width-matched barrier. */
 const FIRST_OUTPUT_TIMEOUT_MS = 3000;
@@ -79,18 +82,45 @@ export class TerminalBridge {
         rows: 24,
         cwd: session.cwd,
         env: processEnv(),
+        // Terminal bytes are opaque (architecture red line): without this,
+        // node-pty decodes the pty stream as UTF-8 and every invalid byte
+        // (binary output, latin-1 logs) is silently rewritten to U+FFFD
+        // before it reaches the client.
+        encoding: null,
       },
     );
     const client: AttachedClient = { ws, pty };
     this.clients.set(session.id, client);
     this.tracker.setAttached(session.id, true);
 
+    // The seed's width barrier: the capture must happen after the client's
+    // first init/resize has been applied to the PTY, so tmux renders the
+    // history at the client's size rather than the 80x24 spawn size.
+    let signalResize: () => void = () => {};
+    const firstResize = new Promise<void>((resolve) => {
+      signalResize = resolve;
+    });
+    // Seed depth follows the client's declared scrollback (D7): the value
+    // arrives with the same init frame as the geometry, before the capture.
+    let seedLines = DEFAULT_SEED_LINES;
+
     wirePtyToSocket(ws, pty, () => {
       if (this.clients.get(session.id) === client) {
         this.clients.delete(session.id);
         this.tracker.setAttached(session.id, false);
       }
-    }, { holdOutputUntil: this.seedFor(pty, session.tmuxName) });
+    }, {
+      onResize: signalResize,
+      onInit: (message) => {
+        if (
+          typeof message.scrollback === "number" &&
+          Number.isFinite(message.scrollback)
+        ) {
+          seedLines = Math.min(Math.max(Math.round(message.scrollback) - 10, 10), MAX_SEED_LINES);
+        }
+      },
+      holdOutputUntil: this.seedFor(pty, session.tmuxName, firstResize, () => seedLines),
+    });
 
     ws.on("close", () => {
       // If the socket dropped without the PTY exiting, clean up here.
@@ -111,42 +141,82 @@ export class TerminalBridge {
       scroll. capture-pane renders the pane's own history as a linear escape
       document at the pane's current width; those bytes are forwarded
       verbatim to the connecting client and used for nothing else — no
-      parsing, no logging, no persistence. The capture is gated on the first
-      attach repaint: that proves tmux processed the attach and the pane has
-      settled at this client's size, so the seed matches the client width. */
-  private seedFor(pty: nodePty.IPty, tmuxName: string): Promise<Buffer | null> {
-    const firstOutput = new Promise<null>((resolve) => {
-      const guard = setTimeout(() => resolve(null), FIRST_OUTPUT_TIMEOUT_MS);
-      const off = pty.onData(() => {
-        clearTimeout(guard);
-        off.dispose();
-        resolve(null);
-      });
-    });
-    return firstOutput.then(() =>
-      execa(
-        "tmux",
-        [
-          "-L",
-          this.socket,
-          "capture-pane",
-          "-p",
-          "-e",
-          "-T",
-          "-S",
-          `-${SEED_MAX_LINES}`,
-          "-E",
-          "-1",
-          "-t",
-          tmuxName,
-        ],
-        { encoding: "buffer", reject: false, timeout: FIRST_OUTPUT_TIMEOUT_MS },
-      ).then((r) =>
-        // execa 10 binary output is a plain Uint8Array, not a Buffer
-        r.stdout instanceof Uint8Array && r.stdout.length > 0
-          ? normalizeSeedLineEndings(r.stdout)
-          : null,
-      ).catch(() => null),
-    );
+      parsing, no logging, no persistence. The capture is gated on the
+      client's first init/resize and the repaint it forces, so the seed
+      renders at the client's width; a socket that never resizes falls back
+      to a timed capture at the spawn size. */
+  private seedFor(
+    pty: nodePty.IPty,
+    tmuxName: string,
+    firstResize: Promise<void>,
+    seedLines: () => number,
+  ): Promise<Buffer | null> {
+    const barrier = Promise.race([
+      firstResize.then(() => nextOutput(pty)),
+      delay(FIRST_OUTPUT_TIMEOUT_MS),
+    ]);
+    return barrier
+      .then(() =>
+        execa(
+          "tmux",
+          [
+            "-L",
+            this.socket,
+            "display-message",
+            "-p",
+            "-t",
+            tmuxName,
+            "#{history_size}",
+          ],
+          { reject: false, timeout: FIRST_OUTPUT_TIMEOUT_MS },
+        ),
+      )
+      .then((probe) => {
+        // No history above the screen: `-E -1` would clamp to line 0 and
+        // return the first VISIBLE line, which the attach repaint then
+        // sends again — a duplicated line at the seam on every fresh
+        // session. Skip the seed instead.
+        if (probe.failed || Number(probe.stdout.trim()) === 0) return null;
+        return execa(
+          "tmux",
+          [
+            "-L",
+            this.socket,
+            "capture-pane",
+            "-p",
+            "-e",
+            "-T",
+            "-S",
+            `-${seedLines()}`,
+            "-E",
+            "-1",
+            "-t",
+            tmuxName,
+          ],
+          { encoding: "buffer", reject: false, timeout: FIRST_OUTPUT_TIMEOUT_MS },
+        ).then((r) =>
+          // execa 10 binary output is a plain Uint8Array, not a Buffer
+          r.stdout instanceof Uint8Array && r.stdout.length > 0
+            ? normalizeSeedLineEndings(r.stdout)
+            : null,
+        );
+      })
+      .catch(() => null);
   }
+}
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Resolves on the next PTY data frame (tmux's repaint after a resize),
+    or after `ms` if the pane stays quiet. */
+function nextOutput(pty: nodePty.IPty, ms = FIRST_OUTPUT_TIMEOUT_MS): Promise<void> {
+  return new Promise((resolve) => {
+    const guard = setTimeout(resolve, ms);
+    const off = pty.onData(() => {
+      clearTimeout(guard);
+      off.dispose();
+      resolve();
+    });
+  });
 }

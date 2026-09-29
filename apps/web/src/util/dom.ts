@@ -7,6 +7,7 @@ export const KEYBINDINGS = {
   exitMaximize: "Escape",
   terminalSearch: "Ctrl+f",
   terminalCopy: "Ctrl+c",
+  terminalCopyShift: "Ctrl+Shift+c",
   terminalPaste: "Ctrl+v",
   terminalPasteShift: "Ctrl+Shift+v",
   terminalBottom: "Ctrl+End",

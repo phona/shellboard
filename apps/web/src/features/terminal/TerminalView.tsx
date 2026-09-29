@@ -144,7 +144,7 @@ export function TerminalView({
               <button
                 type="button"
                 className="icon-btn"
-                title="Copy selection (drag to select)"
+                title="Copy selection (Ctrl+C)"
                 aria-label="Copy selection"
                 onClick={terminal.copySelection}
               >
@@ -194,7 +194,7 @@ export function TerminalView({
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
-                terminal.findNext();
+                terminal.findNext(searchValue);
               }
               if (event.key === "Escape") terminal.setSearchOpen(false);
             }}
@@ -339,8 +339,8 @@ export function TerminalView({
       {/* AoE-style accessory key row: soft keyboards have no Esc/Ctrl/arrows,
           which makes a shell unusable without it. Bytes go through the same
           WS path as typed input; mousedown preventDefault keeps the soft
-          keyboard open. Copying is the terminal's own long-press selection
-          with copy-on-release, over the full local scrollback. */}
+          keyboard open. Copying: long-press drag selects, the ^C key flips
+          into copy while a selection exists (same smart Ctrl+C as desktop). */}
       {isMobile && terminal.status === "connected" && !exited && (
         <div className="term-keys" role="group" aria-label="Terminal keys">
           <button
@@ -384,14 +384,18 @@ export function TerminalView({
           </button>
           <button
             type="button"
-            aria-label="Ctrl+C"
+            aria-label={terminal.hasSelection ? "Copy selection" : "Ctrl+C"}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
+              if (terminal.hasSelection) {
+                terminal.copySelection();
+                return;
+              }
               terminal.setCtrlArmed(false);
               terminal.sendText("\x03");
             }}
           >
-            ^C
+            {terminal.hasSelection ? "copy" : "^C"}
           </button>
           <button
             type="button"

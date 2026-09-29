@@ -128,6 +128,10 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
     const onKey = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return;
       if (matchesBinding(event, KEYBINDINGS.search)) {
+        // A dialog owns the keyboard: focusing the topbar search would
+        // silently capture the next keystrokes behind the backdrop and
+        // leave the list mysteriously filtered when it closes.
+        if (document.querySelector(".modal-backdrop")) return;
         event.preventDefault();
         searchRef.current?.focus();
       }
@@ -248,9 +252,13 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
   const toolContent = selected ? (
     <ErrorBoundary>
       {rightTab === "diff" ? (
-        <DiffPanel data={selected} />
+        <DiffPanel key={selected.session.id} data={selected} />
       ) : rightTab === "files" ? (
-        <FilesPanel data={selected} />
+        // key: remount on session switch, like the tool terminal below —
+        // panel state (open file, directory, staged filter) must not carry
+        // across sessions, and an unsaved edit must never land in the
+        // newly selected session's file.
+        <FilesPanel key={selected.session.id} data={selected} />
       ) : (
         // key: remount on session switch — the hook's off-bottom state
         // (live pill) is component state and must not carry across sessions

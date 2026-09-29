@@ -30,7 +30,14 @@ export class TmuxService {
         "-F",
         "#{session_name}|#{window_activity}|#{session_attached}",
       ),
-      { reject: false },
+      {
+        reject: false,
+        // A hung tmux (blocked server, stuck client socket) must not stall
+        // the observer: without a timeout this await never settles, the
+        // observer's `ticking` latch stays set, and activity/exited stop
+        // updating for the lifetime of the process.
+        timeout: 5000,
+      },
     );
     const map = new Map<string, TmuxSessionInfo>();
     if (result.failed) return map;
@@ -81,11 +88,26 @@ export class TmuxService {
    * server (user tmux.conf must not affect the shellboard socket, D2).
    */
   async newSession(name: string, cwd: string, command: string[]): Promise<void> {
+    // One invocation, three commands: boot the server (no-op if running),
+    // raise the global history-limit, then create the session. history-limit
+    // is a window option read when the pane is created — setting it after
+    // new-session (the old order) leaves the pane at tmux's 2000-line
+    // default forever, since already-discarded lines never come back, which
+    // silently caps both the D5 scrollback and the D7 seed. Splitting these
+    // into separate execa calls races a just-booted server ("no server
+    // running"), hence the single command line.
     await execa(
       "tmux",
       this.args(
         "-f",
         "/dev/null",
+        "start-server",
+        ";",
+        "set-option",
+        "-g",
+        "history-limit",
+        "50000",
+        ";",
         "new-session",
         "-d",
         "-s",
@@ -95,7 +117,16 @@ export class TmuxService {
         ...command,
       ),
     );
-    await this.applySessionOptions(name);
+    try {
+      await this.applySessionOptions(name);
+    } catch (err) {
+      // The session exists but is unconfigured and unknown to the DB: an
+      // orphan agent on the shellboard socket that nothing can list, kill,
+      // or observe, and that blocks the tmuxName on retry. Kill it and let
+      // the caller report the failure.
+      await this.killSession(name);
+      throw err;
+    }
   }
 
   /**
@@ -110,8 +141,6 @@ export class TmuxService {
    */
   async applySessionOptions(name: string): Promise<void> {
     await execa("tmux", this.args("set-option", "-t", name, "monitor-activity", "on"));
-    // Generous scrollback for real `tmux attach` users.
-    await execa("tmux", this.args("set-option", "-t", name, "history-limit", "50000"));
     await execa("tmux", this.args("set-option", "-t", name, "status", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "mouse", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "set-clipboard", "on"));
@@ -182,6 +211,13 @@ export class TmuxService {
    * on a timer or on server-side state; it exists for explicit user actions.
    */
   async sendText(name: string, text: string): Promise<void> {
+    // Defense in depth for D6: the payload is typed literally (send-keys
+    // -l), so a newline byte would be a line submit and the pane would
+    // execute the text's first line. Names are sanitized upstream; this is
+    // the last gate before the pane.
+    if (/[\n\r]/.test(text)) {
+      throw httpError(400, "refusing to send text containing a newline");
+    }
     const result = await execa(
       "tmux",
       this.args("send-keys", "-t", name, "-l", "--", text),

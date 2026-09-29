@@ -23,6 +23,8 @@ export interface TerminalApi {
   status: TerminalStatus;
   /** Viewport sits on the live bottom (false = user is reading history). */
   atBottom: boolean;
+  /** A text selection exists (the mobile key row flips ^C into copy). */
+  hasSelection: boolean;
   /** Snap the viewport back to the live bottom and resume follow. */
   goLive(): void;
   reconnect(): void;
@@ -54,6 +56,11 @@ export function useTerminalWs(path: string): TerminalApi {
   const searchOptionsRef = useRef<ISearchOptions | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const encoderRef = useRef(new TextEncoder());
+  // Input typed while the socket is down is queued, not dropped (D5: the
+  // client buffer is lossless — that promise covered output only). Bounded
+  // so a long outage cannot grow memory without limit; a chunk that does
+  // not fit is dropped with a toast, earlier keystrokes survive.
+  const inputQueueRef = useRef<{ chunks: Uint8Array[]; bytes: number }>({ chunks: [], bytes: 0 });
   const [status, setStatus] = useState<TerminalStatus>("connecting");
   const [searchOpen, setSearchOpen] = useState(false);
   const [pasteConfirmation, setPasteConfirmation] = useState<{ lines: number } | null>(null);
@@ -65,9 +72,27 @@ export function useTerminalWs(path: string): TerminalApi {
   // buffer is the real transcript, so off-bottom is knowable exactly.
   const userPinnedRef = useRef(false);
   const [atBottom, setAtBottom] = useState(true);
+  const [hasSelection, setHasSelection] = useState(false);
   const [nonce, setNonce] = useState(0);
   const fontSize = useUi((state) => state.fontSize);
   const scrollback = useUi((state) => state.scrollback);
+
+  const INPUT_QUEUE_BYTES = 64 * 1024;
+  const queueInput = useCallback((bytes: Uint8Array): void => {
+    const queue = inputQueueRef.current;
+    if (queue.bytes + bytes.length > INPUT_QUEUE_BYTES) {
+      toast("Input dropped — too much typed while disconnected", "error");
+      return;
+    }
+    queue.chunks.push(bytes);
+    queue.bytes += bytes.length;
+  }, []);
+  const flushInputQueue = useCallback((ws: WebSocket): void => {
+    const queue = inputQueueRef.current;
+    for (const chunk of queue.chunks) ws.send(chunk);
+    queue.chunks = [];
+    queue.bytes = 0;
+  }, []);
 
   const sendResize = useCallback(() => {
     const term = termRef.current;
@@ -117,6 +142,10 @@ export function useTerminalWs(path: string): TerminalApi {
       let attempt = 0;
       let reconnectTimer: number | null = null;
       let remoteEnded = false;
+      // Last time the server proved liveness (pong). A half-open socket —
+      // slept laptop, NAT eviction — never fires close, so staleness here
+      // is the only signal the peer is gone.
+      let lastPongAt = Date.now();
 
       const termTheme = readTerminalTheme();
       const term = new Terminal({
@@ -212,6 +241,9 @@ export function useTerminalWs(path: string): TerminalApi {
         if (term.buffer.active.type === "alternate") return;
         syncAtBottom();
       });
+      term.onSelectionChange(() => {
+        setHasSelection(term.hasSelection());
+      });
 
       // Live-follow invariant: xterm only advances the viewport with new
       // output when it already sits at the bottom — one reflow (keyboard
@@ -292,18 +324,6 @@ export function useTerminalWs(path: string): TerminalApi {
           return false;
         }
       });
-
-      // Copy-on-release: releasing a selection copies it, like an editor
-      // with copy-on-select.
-      const onMouseUp = (event: MouseEvent) => {
-        if (event.button !== 0) return;
-        const selection = term.getSelection();
-        if (!selection) return;
-        void navigator.clipboard.writeText(selection).catch(() => {
-          toast("Copy blocked by the browser — press Ctrl+C instead", "error");
-        });
-      };
-      container.addEventListener("mouseup", onMouseUp, true);
 
       // Paste gate (VS Code-style): multi-line clipboard content is executed
       // line by line by the shell, so it needs explicit confirmation.
@@ -477,10 +497,8 @@ export function useTerminalWs(path: string): TerminalApi {
           touchTimer = null;
         }
         if (touchAnchor) {
-          const selection = term.getSelection();
-          if (selection) {
-            void navigator.clipboard.writeText(selection).catch(() => {});
-          }
+          // Selection stays on screen after release — copying is an explicit
+          // Ctrl+C / key-row action, never a silent side effect.
         } else {
           if (touchStart && Date.now() - touchStart.at < 300) {
             term.clearSelection();
@@ -514,19 +532,28 @@ export function useTerminalWs(path: string): TerminalApi {
       container.addEventListener("touchmove", onTouchMove, { passive: false });
       container.addEventListener("touchend", onTouchEnd, true);
 
+      // Web-style copy: Ctrl+C copies when a selection exists and otherwise
+      // falls through to the shell as SIGINT — the key decides by state,
+      // never stealing the interrupt. Ctrl+Shift+C is the unconditional
+      // fallback (terminal habit). The selection survives copying.
+      const copySelectionNow = (): boolean => {
+        if (!term.hasSelection()) return false;
+        void navigator.clipboard.writeText(term.getSelection()).catch(() => {
+          // clipboard permission denied
+        });
+        return true;
+      };
       term.attachCustomKeyEventHandler((event) => {
         if (event.type !== "keydown") return true;
         if (matchesBinding(event, KEYBINDINGS.terminalSearch)) {
           setSearchOpen(true);
           return false;
         }
-        if (matchesBinding(event, KEYBINDINGS.terminalCopy) && term.hasSelection()) {
-          void navigator.clipboard
-            .writeText(term.getSelection())
-            .catch(() => {
-              // clipboard permission denied
-            });
-          term.clearSelection();
+        if (matchesBinding(event, KEYBINDINGS.terminalCopy) && copySelectionNow()) {
+          return false;
+        }
+        if (matchesBinding(event, KEYBINDINGS.terminalCopyShift)) {
+          copySelectionNow();
           return false;
         }
         if (
@@ -551,12 +578,11 @@ export function useTerminalWs(path: string): TerminalApi {
         return true;
       });
       term.onData((data) => {
-        const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
         // Sticky mobile Ctrl (soft keyboards have no Ctrl key): the next
         // single character is sent as its control code — a-z fold to
         // 0x01–0x1a, space and @[\]^_ follow ASCII caret notation. Any
         // other input disarms and passes through untouched.
+        let payload = data;
         if (ctrlArmedRef.current) {
           ctrlArmedRef.current = false;
           setCtrlArmedState(false);
@@ -565,12 +591,20 @@ export function useTerminalWs(path: string): TerminalApi {
             const isLetter = (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
             const isCaretPunct = code === 0x20 || (code >= 0x40 && code <= 0x5f);
             if (isLetter || isCaretPunct) {
-              ws.send(encoderRef.current.encode(String.fromCharCode(code & 0x1f)));
-              return;
+              payload = String.fromCharCode(code & 0x1f);
             }
           }
         }
-        ws.send(encoderRef.current.encode(data));
+        const bytes = encoderRef.current.encode(payload);
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(bytes);
+        } else {
+          // Socket down (connecting, reconnecting, or a half-open peer):
+          // queue it — dropping input silently loses commands and half-
+          // typed lines exactly when the user is trying to recover.
+          queueInput(bytes);
+        }
       });
 
       const doFit = () => {
@@ -589,9 +623,17 @@ export function useTerminalWs(path: string): TerminalApi {
         wsRef.current = ws;
         ws.onopen = () => {
           attempt = 0;
+          lastPongAt = Date.now();
           setStatus("connected");
           doFit();
-          ws.send(JSON.stringify({ type: "init", cols: term.cols, rows: term.rows }));
+          // scrollback tells the server how deep the connect-time history
+          // seed should reach (D7) — it must match this terminal's buffer.
+          ws.send(
+            JSON.stringify({ type: "init", cols: term.cols, rows: term.rows, scrollback }),
+          );
+          // Anything typed while the socket was down goes now, after the
+          // geometry frame so the server has the right size for it.
+          flushInputQueue(ws);
         };
         ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
@@ -608,13 +650,26 @@ export function useTerminalWs(path: string): TerminalApi {
             } else if (message.type === "ended") {
               remoteEnded = true;
               setStatus("ended");
+            } else if (message.type === "pong") {
+              lastPongAt = Date.now();
+            } else if (message.type === "seed-start") {
+              // A connect-time history seed follows. Every attach re-seeds
+              // from tmux, so the local transcript is replaced, not
+              // extended: appending the seed to a buffer that already
+              // holds the same history would duplicate the scrollback.
+              // (A first connect resets an empty buffer — a no-op.)
+              term.reset();
             }
           } catch {
             // non-JSON control frame
           }
         };
         ws.onclose = (event) => {
-          wsRef.current = null;
+          // Only the current socket may clear the ref. A superseded
+          // socket's close event arrives after its replacement is live
+          // (terminal rebuild, retry); nulling the ref then would
+          // silently kill every input path on a healthy connection.
+          if (wsRef.current === ws) wsRef.current = null;
           if (disposed || remoteEnded || event.code === 4001) return;
           setStatus("reconnecting");
           attempt += 1;
@@ -630,12 +685,19 @@ export function useTerminalWs(path: string): TerminalApi {
       });
       // Keepalive: proxied paths (Cloudflare) drop idle WebSockets after
       // ~100s, and every drop used to cost a reconnect. The server pongs.
+      // Three unanswered pings mean the peer is gone (half-open socket),
+      // which never fires close on its own — drop it and let the reconnect
+      // path take over instead of typing into a dead connection.
+      const PING_INTERVAL_MS = 25000;
       const pingTimer = window.setInterval(() => {
         const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "ping" }));
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (Date.now() - lastPongAt > 3 * PING_INTERVAL_MS) {
+          ws.close();
+          return;
         }
-      }, 25000);
+        ws.send(JSON.stringify({ type: "ping" }));
+      }, PING_INTERVAL_MS);
       term.focus();
       connect();
 
@@ -644,7 +706,6 @@ export function useTerminalWs(path: string): TerminalApi {
         stopFling();
         if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
         container.removeEventListener("contextmenu", contextMenu, true);
-        container.removeEventListener("mouseup", onMouseUp, true);
         container.removeEventListener("touchstart", onTouchStart);
         container.removeEventListener("touchmove", onTouchMove);
         container.removeEventListener("touchend", onTouchEnd, true);
@@ -686,11 +747,14 @@ export function useTerminalWs(path: string): TerminalApi {
   }, []);
 
   const sendText = useCallback((text: string) => {
+    const bytes = encoderRef.current.encode(text);
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(encoderRef.current.encode(text));
+      ws.send(bytes);
+    } else {
+      queueInput(bytes);
     }
-  }, []);
+  }, [queueInput]);
 
   const setCtrlArmed = useCallback((value: boolean) => {
     ctrlArmedRef.current = value;
@@ -733,12 +797,9 @@ export function useTerminalWs(path: string): TerminalApi {
   const copySelection = useCallback(() => {
     const selection = termRef.current?.getSelection();
     if (!selection) return;
-    void navigator.clipboard
-      .writeText(selection)
-      .then(() => termRef.current?.clearSelection())
-      .catch(() => {
-        // clipboard permission denied
-      });
+    void navigator.clipboard.writeText(selection).catch(() => {
+      // clipboard permission denied
+    });
   }, []);
 
   const findNext = useCallback((term?: string) => {
@@ -764,6 +825,7 @@ export function useTerminalWs(path: string): TerminalApi {
     containerRef,
     status,
     atBottom,
+    hasSelection,
     goLive,
     reconnect,
     sendText,

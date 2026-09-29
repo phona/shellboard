@@ -222,7 +222,7 @@ activity ≥ 10s             → idle
 
 WebSocket 断开 / 浏览器关闭 → 只杀 node-pty(tmux client),不碰 tmux session,Agent 继续运行。重开 → 新 PTY 重新 attach。**Web terminal lifecycle ≠ Agent session lifecycle**,必须有集成测试。
 
-重连(浏览器标签存活)时客户端缓冲无损,滚动历史连续;刷新/标签被浏览器丢弃后,由 D7 的**接入历史种子**恢复 tmux 内的历史(默认 ≈5000 行,含颜色);更早或需要完整原文时走 `tmux -L shellboard attach`(history-limit 50000)。
+重连(浏览器标签存活)时客户端缓冲由 D7 种子重新播种(`seed-start` 控制帧先清空旧缓冲,避免与旧转录重复),滚动历史连续;刷新/标签被浏览器丢弃后,同样由**接入历史种子**恢复 tmux 内的历史(默认 ≈5000 行,含颜色);更早或需要完整原文时走 `tmux -L shellboard attach`(history-limit 50000)。
 
 ### D6 用户主动的路径注入(Send to terminal)
 
@@ -236,7 +236,7 @@ live 画面的传输是忠实的字节搬运,累积机制在 **tmux 侧**:shellb
 - 转录在本地 scrollback 天然生长;滚动/搜索/选择全部纯本地、零网络往返、零重放(缓冲从字节流锁定步进生长,不存在任何重放)。
 - **滚动路由**:客户端跟踪 DECSET 1049(overrides 生效时不会出现;若出现说明 overrides 未生效)——全屏应用拥有视口时滚轮等量转为方向键作为普通输入(iTerm2 alternate-scroll 语义);普通 pane 滚本地缓冲。桌面滚轮、移动端滑动(内容跟手指+惯性)、PageUp/Down、Ctrl+End 全部本地即时;`touch-action: none` 保证真机上浏览器不抢手势。
 - **鼠标报告**(1000/1002/1003/1006/1015)被吞噬:普通拖拽保持浏览器原生选择。
-- **接入历史种子**(唯一 capture-pane carve-out,用户已批准):tmux attach 协议只发当前屏,冷启动页面将无历史可滚。桥接在 attach 后等首个重绘帧(屏障:tmux 已按本客户端尺寸重排),执行一次 `capture-pane -p -e -T -S -4990 -E -1`(可见屏之上的历史,含 SGR 颜色,上限对齐客户端 scrollback),**字节原样**先于 live 流发给接入客户端;服务端不解析、不落盘、不进日志、无其他消费方。`-E -1` 精确止于可见屏之上,与随后的 attach 重绘无缝拼合。
+- **接入历史种子**(唯一 capture-pane carve-out,用户已批准):tmux attach 协议只发当前屏,冷启动页面将无历史可滚。桥接等客户端首帧 `init`/`resize` 生效、tmux 按本客户端尺寸重排后的首个重绘帧(屏障),执行一次 `capture-pane -p -e -T -S -4990 -E -1`(可见屏之上的历史,含 SGR 颜色,上限对齐客户端 scrollback),**字节原样**先于 live 流发给接入客户端;服务端不解析、不落盘、不进日志、无其他消费方。`-E -1` 精确止于可见屏之上,与随后的 attach 重绘无缝拼合;历史为空(`#{history_size}` 为 0)时跳过种子,避免首行与重绘重复。种子前发送 `seed-start` 控制帧:客户端先清空本地转录再接收,重连因此是重新播种而非叠加重复块。
 - **已知边界**:全屏应用(vim/less)运行期间帧不污染 scrollback(经典 no-alt-screen 行为,退出后恢复原画面);tmux 对爆炸式输出会合并刷新(如 `seq 1 300` 一瞬打完),中间行不逐行到达——真实 agent 输出速度不受影响;接缝处(捕获与放行间隙)繁忙 pane 可能重复个别行。
 
 ### D8 任务完成通知:状态驱动为主,agent 声明为精
