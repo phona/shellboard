@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import type { Services } from "./services.js";
@@ -73,6 +74,19 @@ export async function buildApp(
   app.setNotFoundHandler((request, reply) => {
     const isApi = request.url.startsWith("/api/");
     if (!isApi && (request.method === "GET" || request.method === "HEAD") && hasStatic) {
+      // Real files (hashed assets, fonts) serve as-is; only misses fall back
+      // to the SPA entry. Without the existence check, sendFile("index.html")
+      // would answer every asset request with HTML.
+      const pathname = new URL(request.url, "http://localhost").pathname;
+      const decoded = decodeURIComponent(pathname);
+      const file = path.resolve(services.config.webDist, `.${path.posix.normalize(`/${decoded}`)}`);
+      if (
+        file.startsWith(services.config.webDist + path.sep) &&
+        fs.existsSync(file) &&
+        fs.statSync(file).isFile()
+      ) {
+        return reply.sendFile(decoded);
+      }
       return reply.sendFile("index.html");
     }
     return reply.code(404).send({ error: "not found" });
