@@ -16,9 +16,20 @@ export class ActivityTracker {
   private readonly runtimes = new Map<string, SessionRuntime>();
   private readonly tmuxInfos = new Map<string, TmuxSessionInfo | null>();
   private readonly attached = new Map<string, boolean>();
+  /** Server-side consumers of activity transitions (e.g. the idle notify). */
+  private transitionListener:
+    | ((sessionId: string, prev: SessionRuntime, next: SessionRuntime) => void)
+    | null = null;
 
   constructor(bus: EventBus) {
     this.bus = bus;
+  }
+
+  /** Single listener, set once during service wiring. */
+  setTransitionListener(
+    listener: (sessionId: string, prev: SessionRuntime, next: SessionRuntime) => void,
+  ): void {
+    this.transitionListener = listener;
   }
 
   get(sessionId: string): SessionRuntime {
@@ -72,6 +83,7 @@ export class ActivityTracker {
       prev.attachedClients !== next.attachedClients;
     if (changed) {
       this.bus.publish({ type: "session.activity", runtime: next });
+      if (prev) this.transitionListener?.(sessionId, prev, next);
     }
   }
 }

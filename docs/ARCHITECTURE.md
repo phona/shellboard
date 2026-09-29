@@ -239,6 +239,16 @@ live 画面的传输是忠实的字节搬运,累积机制在 **tmux 侧**:shellb
 - **接入历史种子**(唯一 capture-pane carve-out,用户已批准):tmux attach 协议只发当前屏,冷启动页面将无历史可滚。桥接在 attach 后等首个重绘帧(屏障:tmux 已按本客户端尺寸重排),执行一次 `capture-pane -p -e -T -S -4990 -E -1`(可见屏之上的历史,含 SGR 颜色,上限对齐客户端 scrollback),**字节原样**先于 live 流发给接入客户端;服务端不解析、不落盘、不进日志、无其他消费方。`-E -1` 精确止于可见屏之上,与随后的 attach 重绘无缝拼合。
 - **已知边界**:全屏应用(vim/less)运行期间帧不污染 scrollback(经典 no-alt-screen 行为,退出后恢复原画面);tmux 对爆炸式输出会合并刷新(如 `seq 1 300` 一瞬打完),中间行不逐行到达——真实 agent 输出速度不受影响;接缝处(捕获与放行间隙)繁忙 pane 可能重复个别行。
 
+### D8 任务完成通知:状态驱动为主,agent 声明为精
+
+Shellboard 永远不从终端字节推断"任务完成"(bytes are opaque);D3 的 working→idle 是唯一可用的状态信号。
+
+**状态驱动(默认路径,零接线)**:ActivityTracker 的 working→idle 跃迁接同一个 hook 扇出。工作阶段自离开 idle/exited 起算(穿过 cooling 不重置——<10s 的停顿是同一阶段),持续 ≥ `SHELLBOARD_NOTIFY_IDLE_MIN_MS`(默认 30s,0 关闭)、session 非 shell 类型(交互 shell 每条命令都是一次 working→idle)时,以 `<name> is now idle` 触发 `~/.shellboard/notify/` 的 hooks。附着状态**不**设门槛:开着的 web 标签会让 PTY 长时间保持 attached 而无人观看,"是否在看"是浏览器通知的职责(document.hidden),不是服务端的。这是启发式而非精确信号(静默思考 >阈值 会误报、等待输入也会触发),且只走 hooks 不走 WS 广播(web 端对该跃迁本就有浏览器通知)。
+
+**agent 声明(精确路径,按需接线)**:agent CLI 自带 hook 机制(Claude Code 的 Stop、Codex 的 `notify`、shell 手动执行)调用零依赖 CLI `shellboard-notify`(读 `TMUX_PANE` 与 `~/.shellboard/notify-token`)→ `POST /api/notify`:定位 session(显式 `sessionId`,或 `TMUX_PANE` → tmux `display-message` 查 `#{session_name}` → 按不可变 tmuxName 反查;定位不到也照常通知,`session: null`),广播 `session.notify` 到 `/api/events`(web toast + 后台时浏览器 Notification),并 spawn hooks。
+
+**hooks 执行边界(两条触发路径共用)**:`~/.shellboard/notify/` 下每个 `*.js`/`*.mjs` 在事件时 spawn(payload 与 WS 事件同形、走 stdin;子进程崩溃隔离,每次重读目录,文件名加 `.disabled.` 即停用;超时 SIGKILL;hook 的 cwd 为 session.cwd,注入 `SHELLBOARD_SESSION_ID/NAME/CWD`)。能运行的只有用户放进该目录的文件,触发源只能决定 hook 是否运行,不能决定运行什么——不是通用 exec endpoint。不做 per-project hook 目录(克隆仓库即执行其代码是供应链风险)。链路上任何失败都不影响 agent 进程与 shellboard。
+
 ## 5. API Surface(全集)
 
 ```text

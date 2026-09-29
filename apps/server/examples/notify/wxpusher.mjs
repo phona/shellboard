@@ -111,7 +111,13 @@ try {
     }),
     signal: AbortSignal.timeout(8000),
   });
-  if (!response.ok) console.error(`wxpusher: HTTP ${response.status}`);
+  // WxPusher reports failures (quota, bad UID) inside a 200 response body.
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result || result.code !== 1000) {
+    console.error(
+      `wxpusher: HTTP ${response.status} code ${result?.code ?? "?"} ${result?.msg ?? ""}`.trim(),
+    );
+  }
 } catch (err) {
   console.error(`wxpusher: ${err?.message ?? err}`);
 }

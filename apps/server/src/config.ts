@@ -22,6 +22,11 @@ export interface ServerConfig {
   notifyHooksDir: string;
   /** Hard kill timeout for one notify hook run. */
   notifyHookTimeoutMs: number;
+  /**
+   * Minimum working-phase length before a working→idle transition fires the
+   * notify hooks (state-driven completion hint, D8). 0 disables it.
+   */
+  notifyIdleMinMs: number;
   /** Extra origins allowed for WebSocket connections (dev: vite origin).
    * The vite dev server also derives server.allowedHosts from the same env. */
   allowedOrigins: string[];
@@ -56,6 +61,7 @@ export function loadConfig(): ServerConfig {
     notifyToken: resolveNotifyToken(homeDir),
     notifyHooksDir: process.env.SHELLBOARD_NOTIFY_DIR ?? path.join(homeDir, "notify"),
     notifyHookTimeoutMs: clampHookTimeout(process.env.SHELLBOARD_NOTIFY_TIMEOUT_MS),
+    notifyIdleMinMs: clampIdleMinMs(process.env.SHELLBOARD_NOTIFY_IDLE_MIN_MS),
     allowedOrigins: extra
       .split(",")
       .map((value) => value.trim())
@@ -96,4 +102,10 @@ function clampHookTimeout(raw: string | undefined): number {
   const value = Number(raw ?? 10000);
   if (!Number.isFinite(value)) return 10000;
   return Math.min(60000, Math.max(500, value));
+}
+
+function clampIdleMinMs(raw: string | undefined): number {
+  const value = Number(raw ?? 30000);
+  if (!Number.isFinite(value)) return 30000;
+  return Math.min(3600000, Math.max(0, value));
 }

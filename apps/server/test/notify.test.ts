@@ -10,6 +10,7 @@ afterAllCleanup();
 const hooksDir = makeTempDir("shellboard-hooks-");
 process.env.SHELLBOARD_NOTIFY_DIR = hooksDir;
 process.env.SHELLBOARD_NOTIFY_TIMEOUT_MS = "1000";
+process.env.SHELLBOARD_NOTIFY_IDLE_MIN_MS = "1000";
 
 /** A hook that drains stdin and records the payload. `body` runs before the write. */
 function writeRecordingHook(name: string, outPath: string, body = ""): string {
@@ -31,7 +32,11 @@ async function createApp() {
 
 type App = Awaited<ReturnType<typeof createApp>>["app"];
 
-async function createSession(app: App, cwd: string): Promise<{ id: string; tmuxName: string }> {
+async function createSession(
+  app: App,
+  cwd: string,
+  agentType: "shell" | "custom" = "shell",
+): Promise<{ id: string; tmuxName: string }> {
   const projectRes = await app.inject({
     method: "POST",
     url: "/api/projects",
@@ -41,7 +46,10 @@ async function createSession(app: App, cwd: string): Promise<{ id: string; tmuxN
   const sessionRes = await app.inject({
     method: "POST",
     url: "/api/sessions",
-    payload: { projectId: projectRes.json().id, name: "notify-session", agentType: "shell" },
+    payload:
+      agentType === "custom"
+        ? { projectId: projectRes.json().id, name: "notify-session", agentType, command: "bash" }
+        : { projectId: projectRes.json().id, name: "notify-session", agentType },
   });
   expect(sessionRes.statusCode).toBe(201);
   const { id, tmuxName } = sessionRes.json().session;
@@ -188,6 +196,53 @@ setInterval(() => {}, 1000);
   // a failing hook never takes the server down
   const health = await app.inject({ method: "GET", url: "/api/sessions" });
   expect(health.statusCode).toBe(200);
+
+  await app.close();
+});
+
+it("fires hooks on a working→idle transition, gated by phase and attachment", async () => {
+  const { app, services } = await createApp();
+  const cwd = makeTempDir();
+  const { id, tmuxName } = await createSession(app, cwd, "custom");
+  const outPath = writeRecordingHook("idle.mjs", path.join(hooksDir, "out-idle.json"));
+  const observe = (activitySeconds: number, attached = 0): void =>
+    services.tracker.observe(id, { name: tmuxName, activitySeconds, attached });
+
+  // phase starts (exited → working), lasts past the minimum, then goes idle
+  observe(1);
+  await sleep(1100);
+  observe(11);
+  await waitFor(() => fs.existsSync(outPath));
+  const fired = JSON.parse(fs.readFileSync(outPath, "utf8"));
+  expect(fired.title).toBe("notify-session is now idle");
+  expect(fired.session).toEqual({ id, name: "notify-session", agentType: "custom", cwd });
+
+  // attached terminal still fires: an open tab holds the PTY for hours
+  // without anyone watching — watching is the browser notification's concern
+  observe(1);
+  services.tracker.setAttached(id, true);
+  await sleep(1100);
+  observe(11);
+  await waitFor(() => {
+    const current = JSON.parse(fs.readFileSync(outPath, "utf8"));
+    return current.at !== fired.at;
+  });
+  services.tracker.setAttached(id, false);
+
+  // too-short phase: a blip, not a finished task — no push
+  const afterAttached = fs.readFileSync(outPath, "utf8");
+  observe(1);
+  observe(11);
+  await sleep(300);
+  expect(fs.readFileSync(outPath, "utf8")).toEqual(afterAttached);
+
+  // interactive shell sessions never push
+  const shell = await createSession(app, cwd, "shell");
+  services.tracker.observe(shell.id, { name: shell.tmuxName, activitySeconds: 1, attached: 0 });
+  await sleep(1100);
+  services.tracker.observe(shell.id, { name: shell.tmuxName, activitySeconds: 11, attached: 0 });
+  await sleep(300);
+  expect(fs.readFileSync(outPath, "utf8")).toEqual(afterAttached);
 
   await app.close();
 });

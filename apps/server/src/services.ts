@@ -41,6 +41,10 @@ export function buildServices(config: ServerConfig): Services {
   const uploads = new UploadService(path.join(config.homeDir, "uploads"));
   const sessions = new SessionService(db, projects, tmux, tracker, bus, uploads);
   const notifier = new NotifyService(config, tmux, sessions, bus);
+  // state-driven notify (D8): activity transitions feed the hook fan-out
+  tracker.setTransitionListener((sessionId, prev, next) => {
+    notifier.handleActivityTransition(sessionId, prev, next);
+  });
   return {
     config,
     db,

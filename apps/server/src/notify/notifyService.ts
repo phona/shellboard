@@ -1,7 +1,14 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import type { NotifyInput, NotifySessionInfo, Session, WsEvent } from "@shellboard/contracts";
+import type {
+  Activity,
+  NotifyInput,
+  NotifySessionInfo,
+  Session,
+  SessionRuntime,
+  WsEvent,
+} from "@shellboard/contracts";
 import type { ServerConfig } from "../config.js";
 import type { EventBus } from "../events/bus.js";
 import { processEnv } from "../env.js";
@@ -25,6 +32,8 @@ export class NotifyService {
   private readonly tmux: TmuxService;
   private readonly sessions: SessionService;
   private readonly bus: EventBus;
+  /** When the current working phase started, per session (D8 idle notify). */
+  private readonly workingSince = new Map<string, number>();
 
   constructor(
     config: ServerConfig,
@@ -50,6 +59,61 @@ export class NotifyService {
     };
     this.bus.publish(event);
     return { session, hooks: this.runHooks(event) };
+  }
+
+  /**
+   * State-driven trigger (D8): a working→idle transition is shellboard's own
+   * completion hint — output stopped for the D3 idle threshold after a real
+   * working phase. Unlike agent-declared events this runs hooks only, without
+   * the WS broadcast: the web UI already notifies on this transition itself.
+   *
+   * A phase starts on leaving idle/exited and runs through working and
+   * cooling — a <10s pause is the same phase, so cooling→working must not
+   * reset the clock. Gates keep it from crying wolf: interactive shells skip
+   * (every command is a working→idle) and the phase must have lasted
+   * notifyIdleMinMs. Attachment deliberately does NOT gate: an open web tab
+   * holds the PTY attached for hours without anyone watching, and whether
+   * the user is actually looking is the browser notification's concern
+   * (document.hidden), not the server's.
+   */
+  handleActivityTransition(sessionId: string, prev: SessionRuntime, next: SessionRuntime): void {
+    const now = Date.now();
+    const quiet = (activity: Activity): boolean => activity === "idle" || activity === "exited";
+    if (!quiet(next.activity)) {
+      if (quiet(prev.activity)) this.workingSince.set(sessionId, now);
+      return;
+    }
+    const since = this.workingSince.get(sessionId);
+    this.workingSince.delete(sessionId);
+    if (next.activity !== "idle") return;
+    if (
+      this.config.notifyIdleMinMs <= 0 ||
+      since === undefined ||
+      now - since < this.config.notifyIdleMinMs
+    ) {
+      return;
+    }
+    let session: Session;
+    try {
+      session = this.sessions.get(sessionId);
+    } catch {
+      return; // gone between the tick and now
+    }
+    if (session.agentType === "shell") return;
+    const event: NotifyEvent = {
+      type: "session.notify",
+      title: `${session.name} is now idle`,
+      body: `after ${Math.max(1, Math.round((now - since) / 1000))}s of activity`,
+      level: "info",
+      at: now,
+      session: {
+        id: session.id,
+        name: session.name,
+        agentType: session.agentType,
+        cwd: session.cwd,
+      },
+    };
+    this.runHooks(event);
   }
 
   /**
