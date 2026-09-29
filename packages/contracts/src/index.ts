@@ -254,20 +254,27 @@ export const RenameFileInputSchema = z.object({
   newName: z.string().min(1),
 });
 
+/** Control characters never belong in a file name. The hard case is the
+ *  newline: "Send to terminal" (D6) types the buffer path literally with
+ *  `send-keys -l`, and a newline byte in that path is a line submit — the
+ *  pane would execute the path's first line. Rejected at the contract so
+ *  no route can forget. */
+const noControlChars = (value: string): boolean => !/[\u0000-\u001f\u007f]/.test(value);
+
 export const SendUploadInputSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).refine(noControlChars, "invalid file name"),
 });
 export type SendUploadInput = z.infer<typeof SendUploadInputSchema>;
 
 /** Binary upload into the session's upload buffer: ?name=<filename> */
 export const UploadQuerySchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).refine(noControlChars, "invalid file name"),
 });
 
 /** Binary upload into a directory inside the session cwd: ?path=<dir>&name= */
 export const UploadToDirQuerySchema = z.object({
   path: z.string().min(1),
-  name: z.string().min(1),
+  name: z.string().min(1).refine(noControlChars, "invalid file name"),
 });
 
 export const AuthLoginInputSchema = z.object({

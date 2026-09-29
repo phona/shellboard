@@ -98,6 +98,18 @@ export function useEvents(): void {
     const connect = (): void => {
       if (closed) return;
       ws = new WebSocket(wsUrl("/api/events"));
+      ws.onopen = () => {
+        // A healthy connection resets the backoff. Without this the delay
+        // stays pinned at the maximum after the first drop, so every later
+        // reconnect waits the full 10s.
+        attempt = 0;
+        // Events broadcast while the socket was down are lost for good —
+        // nothing replays them. The session list also polls every 15s, but
+        // git status and the uploads buffer are stream-only, so resync both
+        // on every (re)connect.
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        void queryClient.invalidateQueries({ queryKey: ["git"] });
+      };
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") handle(ev.data);
       };

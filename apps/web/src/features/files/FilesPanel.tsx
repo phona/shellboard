@@ -380,6 +380,7 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
             <button
               type="button"
               className="btn danger"
+              disabled={remove.isPending}
               onClick={() => remove.mutate(confirmRemove)}
             >
               Delete

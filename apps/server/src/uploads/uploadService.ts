@@ -103,6 +103,11 @@ export class UploadService {
 }
 
 function sanitizeName(name: string): string {
+  // Control characters are rejected before anything else: a newline in a
+  // buffer name would turn "Send to terminal" (D6) into a line submit.
+  if (/[\u0000-\u001f\u007f]/.test(name)) {
+    throw httpError(400, "invalid file name");
+  }
   if (name.includes("/") || name.includes("\\") || name.includes("\0")) {
     throw httpError(400, "invalid file name");
   }

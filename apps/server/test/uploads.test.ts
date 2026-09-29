@@ -163,6 +163,41 @@ it("refuses symlinked entries inside the buffer (no escape via write or send)", 
   await app.close();
 });
 
+it("rejects control characters in names — a newline would submit the pane (D6)", async () => {
+  const services = await createServices();
+  const { sessionId } = await createShellSession(services);
+  const app = await buildApp(services, { logger: false });
+
+  const dir = bufferDir(services, sessionId);
+  // Both upload lanes reject at the contract before anything is written.
+  for (const url of [
+    `/api/sessions/${sessionId}/uploads?name=${encodeURIComponent("a\nb.txt")}`,
+    `/api/sessions/${sessionId}/files/upload?path=.&name=${encodeURIComponent("a\nb.txt")}`,
+  ]) {
+    const res = await app.inject({
+      method: "POST",
+      url,
+      payload: Buffer.from("x"),
+      headers: { "content-type": "application/octet-stream" },
+    });
+    expect(res.statusCode).toBe(400);
+  }
+  expect(fs.existsSync(dir)).toBe(false);
+
+  // Even a name planted directly on disk cannot be sent into the pane:
+  // send-keys -l with a newline would execute the path's first line.
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "a\nb.txt"), "x");
+  const send = await app.inject({
+    method: "POST",
+    url: `/api/sessions/${sessionId}/uploads/send`,
+    payload: { name: "a\nb.txt" },
+  });
+  expect(send.statusCode).toBe(400);
+
+  await app.close();
+});
+
 it("binary upload into a cwd directory keeps the repo lane contract", async () => {
   const services = await createServices();
   const { sessionId, cwd } = await createShellSession(services);

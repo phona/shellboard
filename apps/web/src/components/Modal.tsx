@@ -14,6 +14,17 @@ export function Modal({
   children: ReactNode;
 }) {
   const cardRef = useRef<HTMLDivElement | null>(null);
+  // The focus effect must run exactly once per mount. An inline onClose
+  // (every call site passes one) changes identity on every parent render —
+  // and parents here re-render on timers — so depending on it would tear
+  // down and re-run the effect constantly: the cleanup yanks focus back to
+  // whatever was focused at mount, then setup re-claims the first focusable
+  // in the card (the header close button), eating keystrokes mid-typing.
+  // A ref carries the latest handler without re-running anything.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     const card = cardRef.current;
@@ -26,7 +37,7 @@ export function Modal({
     }
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        onClose();
+        onCloseRef.current();
         return;
       }
       // Keep Tab cycling inside the dialog (WCAG 2.4.3).
@@ -51,7 +62,7 @@ export function Modal({
       window.removeEventListener("keydown", onKey);
       previous?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return createPortal(
     <div

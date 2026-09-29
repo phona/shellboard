@@ -56,12 +56,18 @@ export class FakeWS extends EventEmitter {
   text: string[] = [];
   closed = false;
   closeCode: number | null = null;
+  /** Every frame in send order, binary or not — lets tests assert wire
+      ordering across the two arrays (e.g. seed-start before the seed). */
+  frames: Array<{ binary: boolean; data: Buffer }> = [];
 
   send(data: unknown, opts?: { binary?: boolean }): void {
-    if (opts?.binary || Buffer.isBuffer(data)) {
-      this.binary.push(Buffer.from(data as ArrayBuffer));
+    const binary = Boolean(opts?.binary) || Buffer.isBuffer(data);
+    const buf = Buffer.from(data as ArrayBuffer);
+    this.frames.push({ binary, data: buf });
+    if (binary) {
+      this.binary.push(buf);
     } else {
-      this.text.push(String(data));
+      this.text.push(buf.toString("utf8"));
     }
   }
 

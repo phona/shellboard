@@ -46,6 +46,12 @@ export class ActivityObserver {
       for (const row of sessions) {
         this.tracker.observe(row.id, infos.get(row.tmux_name) ?? null);
       }
+    } catch (err) {
+      // start() fires this with `void`, so a throw here would surface as an
+      // unhandled rejection and kill the process under Node's default
+      // --unhandled-rejections=throw. Observation is best-effort: log and
+      // let the next tick retry.
+      console.warn(`[activity] tick failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       this.ticking = false;
     }

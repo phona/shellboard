@@ -323,6 +323,7 @@ export function DiffPanel({ data }: { data: SessionWithRuntime }) {
             <button
               type="button"
               className="btn danger"
+              disabled={discard.isPending}
               onClick={() => discard.mutate(confirmDiscard)}
             >
               Discard

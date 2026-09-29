@@ -17,6 +17,9 @@ export class ToolTerminalManager {
         rows: 24,
         cwd,
         env: processEnv(),
+        // Opaque bytes, same as the agent bridge: no UTF-8 rewrite of
+        // non-UTF-8 output on the way to the client.
+        encoding: null,
       });
     } catch {
       ws.close(1011, "cannot spawn shell");
