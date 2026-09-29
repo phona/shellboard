@@ -69,8 +69,9 @@ export function SettingsPopover() {
             </span>
           </label>
           <label>
-            Scrollback
+            Initial history
             <select
+              title="History loaded when a terminal connects. Deeper history loads on demand as you scroll to the top — no page reload needed."
               value={scrollback}
               onChange={(event) =>
                 useUi.getState().setScrollback(Number(event.target.value))

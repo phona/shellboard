@@ -144,6 +144,13 @@ export class TmuxService {
     await execa("tmux", this.args("set-option", "-t", name, "status", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "mouse", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "set-clipboard", "on"));
+    // Web-first sizing: with the default `latest`, the pane follows the
+    // most recently active tmux client, so a plain terminal attached to
+    // the same session keeps stealing the window size from the browser
+    // (every steal = SIGWINCH = the agent TUI repaints its whole
+    // transcript, permanent under the no-alt-screen setup). `manual` pins
+    // the window to the size the web client asks for; see resizeWindow.
+    await execa("tmux", this.args("set-option", "-t", name, "window-size", "manual"));
     // Many distros ship xterm-256color terminfo without the Ms (set
     // clipboard) capability, which silently disables set-clipboard — tmux
     // never emits OSC 52. Assert it explicitly. smcup/rmcup/indn are
@@ -175,6 +182,40 @@ export class TmuxService {
       reject: false,
     });
     return result.exitCode === 0;
+  }
+
+  /** Explicit window resize — the only way the pane changes size under
+      `window-size manual`. Called with the web client's geometry so the
+      browser terminal drives the pane. Failures are non-fatal: the pane
+      keeps its size and the next frame re-asserts. */
+  async resizeWindow(name: string, cols: number, rows: number): Promise<void> {
+    await execa(
+      "tmux",
+      this.args("resize-window", "-t", name, "-x", String(cols), "-y", String(rows)),
+      { reject: false },
+    );
+  }
+
+  /** Hands the window size back to the largest remaining tmux client (a
+      plain terminal), so a browser disconnect does not leave the pane
+      pinned to the browser's geometry. No-op when no client remains. */
+  async restoreWindowSize(name: string): Promise<void> {
+    const result = await execa(
+      "tmux",
+      this.args("list-clients", "-t", name, "-F", "#{client_width} #{client_height}"),
+      { reject: false },
+    );
+    if (result.failed) return;
+    let best: { cols: number; rows: number } | null = null;
+    for (const line of result.stdout.split("\n")) {
+      const [cols, rows] = line.trim().split(/\s+/).map(Number);
+      if (cols === undefined || rows === undefined) continue;
+      if (!Number.isFinite(cols) || !Number.isFinite(rows)) continue;
+      if (!best || cols * rows > best.cols * best.rows) {
+        best = { cols, rows };
+      }
+    }
+    if (best) await this.resizeWindow(name, best.cols, best.rows);
   }
 
   async killServer(): Promise<void> {

@@ -254,9 +254,9 @@ export function TerminalView({
               Restart
             </button>
           )}
-          {terminal.status === "reconnecting" && (
+          {(terminal.status === "reconnecting" || terminal.status === "taken-over") && (
             <button type="button" onClick={terminal.reconnect}>
-              retry now
+              {terminal.status === "taken-over" ? "take it back" : "retry now"}
             </button>
           )}
         </div>

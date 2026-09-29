@@ -18,6 +18,11 @@ export type TerminalStatus =
   | "ended"
   | "taken-over";
 
+/** Deepest history the client will hold/pull — aligned with the server's
+    clamp and the tmux history-limit, so a request can never exceed what
+    tmux retains. */
+const MAX_HISTORY_LINES = 49990;
+
 export interface TerminalApi {
   containerRef: RefObject<HTMLDivElement>;
   status: TerminalStatus;
@@ -146,6 +151,14 @@ export function useTerminalWs(path: string): TerminalApi {
       // slept laptop, NAT eviction — never fires close, so staleness here
       // is the only signal the peer is gone.
       let lastPongAt = Date.now();
+      // On-demand history state: `historyDepth` is the depth currently held
+      // (starts at the connect-time seed depth); a re-seed remembers where
+      // the user was reading so the deeper seed can put them back there.
+      let seeded = false;
+      let expectingSeed = false;
+      let expanding = false;
+      let historyDepth = Math.max(10, Math.min(scrollback - 10, MAX_HISTORY_LINES));
+      let reseedFrom: { viewportY: number; length: number } | null = null;
 
       const termTheme = readTerminalTheme();
       const term = new Terminal({
@@ -154,7 +167,11 @@ export function useTerminalWs(path: string): TerminalApi {
         // effect below, which avoids tearing down the Terminal and its WS.
         fontSize: useUi.getState().fontSize,
         fontFamily: readMonoFontStack(),
-        scrollback,
+        // Buffer capacity, not a preallocation: xterm grows lines as they
+        // are written. The cap is the deepest history the client can hold;
+        // how much of it is actually fetched is decided per connect (the
+        // scrollback setting) and on demand (scroll-to-top expansion).
+        scrollback: MAX_HISTORY_LINES,
         theme: termTheme,
         // Alt+click moves the readline cursor via arrow keys (no shell
         // integration needed) — a VS Code terminal affordance
@@ -237,9 +254,29 @@ export function useTerminalWs(path: string): TerminalApi {
         userPinnedRef.current = !bottom;
         setAtBottom(bottom);
       };
+
+      // On-demand scrollback. The buffer is a fixed window and live output
+      // evicts its head, so history the user is reading would slowly
+      // disappear. Reaching the top asks the server for a deeper re-seed
+      // (tmux retains up to MAX_HISTORY_LINES) instead of losing it: the
+      // seed-start payload reports how much actually arrived and whether
+      // the pane has nothing deeper, which stops further requests.
+      const maybeExpandHistory = (): void => {
+        const buf = term.buffer.active;
+        if (!seeded || expanding) return;
+        if (buf.viewportY > 2) return;
+        if (historyDepth >= MAX_HISTORY_LINES) return;
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        expanding = true;
+        historyDepth = Math.min(historyDepth * 3, MAX_HISTORY_LINES);
+        ws.send(JSON.stringify({ type: "history", lines: historyDepth }));
+      };
+
       term.onScroll(() => {
         if (term.buffer.active.type === "alternate") return;
         syncAtBottom();
+        maybeExpandHistory();
       });
       term.onSelectionChange(() => {
         setHasSelection(term.hasSelection());
@@ -292,14 +329,34 @@ export function useTerminalWs(path: string): TerminalApi {
       const flushWheel = () => {
         wheelTimer = null;
         const lines = Math.max(-40, Math.min(40, Math.round(wheelAccum)));
-        wheelAccum = 0;
+        // Carry the remainder: one fast flick can accumulate more than a
+        // single flush's cap, and dropping the excess silently shortens
+        // the scroll — the view stops short of where the gesture pointed.
+        wheelAccum -= lines;
         scrollIntent(lines);
+        // A gesture larger than one flush: keep draining on the next tick
+        // so the full distance lands. Sub-line remainders (< 1) stay put
+        // for the next gesture instead of spinning the timer.
+        if (Math.abs(wheelAccum) >= 1) {
+          wheelTimer = window.setTimeout(flushWheel, 90);
+        }
       };
       const onWheel = (event: WheelEvent) => {
         event.preventDefault();
         event.stopPropagation();
         const delta = event.deltaMode === 1 ? event.deltaY : event.deltaY / 18;
         wheelAccum -= delta;
+        // Pin the moment the gesture points into history — not when the
+        // coalesced flush lands up to 90ms later. Until the pin is set,
+        // the live-follow (scrollToBottom on every parsed write) keeps
+        // yanking the viewport back to the bottom, and during streaming
+        // output that repeatedly undoes the scroll-up: the view is cut
+        // back to live mid-gesture. Only when the buffer can actually
+        // scroll: pinning an unscrollable pane would silently stop
+        // live-follow for a user sitting at the bottom.
+        if (wheelAccum > 0 && term.buffer.active.length > term.rows) {
+          userPinnedRef.current = true;
+        }
         if (wheelTimer === null) {
           wheelTimer = window.setTimeout(flushWheel, 90);
         }
@@ -638,12 +695,29 @@ export function useTerminalWs(path: string): TerminalApi {
         ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
             term.write(new Uint8Array(event.data));
+            if (expectingSeed) {
+              // The seed is the first binary frame after seed-start. Once
+              // it is in, a re-seed restores the reading position: the
+              // deeper seed pushed the user's spot down by `added` lines.
+              expectingSeed = false;
+              const from = reseedFrom;
+              reseedFrom = null;
+              if (from) {
+                const buf = term.buffer.active;
+                const added = buf.length - from.length;
+                term.scrollToLine(
+                  Math.max(0, Math.min(from.viewportY + added, buf.baseY)),
+                );
+                expanding = false;
+              }
+            }
             return;
           }
           try {
             const message = JSON.parse(String(event.data)) as {
               type?: string;
-              active?: boolean;
+              lines?: number;
+              complete?: boolean;
             };
             if (message.type === "taken-over") {
               setStatus("taken-over");
@@ -653,11 +727,30 @@ export function useTerminalWs(path: string): TerminalApi {
             } else if (message.type === "pong") {
               lastPongAt = Date.now();
             } else if (message.type === "seed-start") {
-              // A connect-time history seed follows. Every attach re-seeds
-              // from tmux, so the local transcript is replaced, not
-              // extended: appending the seed to a buffer that already
-              // holds the same history would duplicate the scrollback.
-              // (A first connect resets an empty buffer — a no-op.)
+              const reSeeding = seeded;
+              seeded = true;
+              // The server reports what it actually sent. Fewer lines than
+              // requested (or an explicit complete) means the pane has
+              // nothing deeper — mark the ceiling reached so scroll-to-top
+              // stops asking.
+              if (
+                message.complete === true ||
+                (typeof message.lines === "number" &&
+                  message.lines > 0 &&
+                  message.lines < historyDepth)
+              ) {
+                historyDepth = MAX_HISTORY_LINES;
+              }
+              if (reSeeding) {
+                // Remember where the user was reading; the deeper seed will
+                // push that content down by the number of added lines.
+                reseedFrom = {
+                  viewportY: term.buffer.active.viewportY,
+                  length: term.buffer.active.length,
+                };
+              }
+              // A zero-line seed carries no bytes — do not wait for one.
+              expectingSeed = message.lines !== 0;
               term.reset();
             }
           } catch {
@@ -724,8 +817,9 @@ export function useTerminalWs(path: string): TerminalApi {
       disposed = true;
       cleanup();
     };
-    // scrollback changes require a fresh Terminal instance; fontSize must not
-    // be here — it applies live below, without dropping the PTY
+    // scrollback changes re-run the connect (the init frame's declared
+    // depth follows it); fontSize must not be here — it applies live
+    // below, without dropping the PTY
   }, [path, nonce, scrollback, sendResize]);
 
   useEffect(() => {

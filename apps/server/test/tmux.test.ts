@@ -52,6 +52,9 @@ describe("TmuxService (real tmux on dedicated socket)", () => {
     // UI; generous history-limit serves real `tmux attach` users
     expect(await show("mouse")).toBe("off");
     expect(await show("status")).toBe("off");
+    // Web-first sizing: the pane follows the web client only through
+    // explicit resize-window calls, never the last-active tmux client.
+    expect(await show("window-size")).toBe("manual");
     // history-limit is a window option set globally before the pane exists
     // (newSession), so read the pane's effective value, not a session option
     expect(await pane("#{history_limit}")).toBe("50000");
@@ -117,6 +120,42 @@ describe("TmuxService (real tmux on dedicated socket)", () => {
     });
     const defaultServerSessions = result.failed ? "" : result.stdout;
     expect(defaultServerSessions).not.toContain(name);
+
+    await services.tmux.killSession(name);
+  });
+
+  it("resizes the window on request and restores to the largest client", async () => {
+    const services = await createServices();
+    const dir = makeTempDir();
+    const name = `wsz-${Date.now()}`;
+    await services.tmux.newSession(name, dir, ["bash"]);
+
+    const size = async (): Promise<string> => {
+      const r = await execa(
+        "tmux",
+        [
+          "-L",
+          services.config.tmuxSocket,
+          "display-message",
+          "-p",
+          "-t",
+          name,
+          "#{window_width}x#{window_height}",
+        ],
+        { reject: false },
+      );
+      return r.stdout.trim();
+    };
+
+    // The web client's geometry drives the pane (window-size manual).
+    await services.tmux.resizeWindow(name, 166, 42);
+    expect(await size()).toBe("166x42");
+    await services.tmux.resizeWindow(name, 90, 30);
+    expect(await size()).toBe("90x30");
+
+    // With no clients left, restoreWindowSize is a no-op (size unchanged).
+    await services.tmux.restoreWindowSize(name);
+    expect(await size()).toBe("90x30");
 
     await services.tmux.killSession(name);
   });

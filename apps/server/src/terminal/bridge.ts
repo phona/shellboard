@@ -4,19 +4,19 @@ import { execa } from "execa";
 import type { Session } from "@shellboard/contracts";
 import { processEnv } from "../env.js";
 import type { ActivityTracker } from "../activity/tracker.js";
+import type { TmuxService } from "../tmux/tmux.js";
 import { sendControl, wirePtyToSocket } from "./wire.js";
+import {
+  clampSeedLines,
+  DEFAULT_SEED_LINES,
+  type SeedPayload,
+} from "./wire.js";
 
 interface AttachedClient {
   ws: WebSocket;
   pty: nodePty.IPty;
 }
 
-/** Seed size when the client doesn't declare one: the web client's default
-    scrollback is 5000 lines, so fetching more is wasted WAN bytes (the head
-    is discarded on render). A client that declares deeper scrollback gets a
-    deeper seed, minus a small margin under its buffer size. */
-const DEFAULT_SEED_LINES = 4990;
-const MAX_SEED_LINES = 49990;
 /** The attach repaint normally lands in well under a second; past this the
     session is presumed dead and we seed without the width-matched barrier. */
 const FIRST_OUTPUT_TIMEOUT_MS = 3000;
@@ -53,11 +53,13 @@ function normalizeSeedLineEndings(seed: Uint8Array): Buffer {
 export class TerminalBridge {
   private readonly socket: string;
   private readonly tracker: ActivityTracker;
+  private readonly tmux: TmuxService;
   private readonly clients = new Map<string, AttachedClient>();
 
-  constructor(socket: string, tracker: ActivityTracker) {
+  constructor(socket: string, tracker: ActivityTracker, tmux: TmuxService) {
     this.socket = socket;
     this.tracker = tracker;
+    this.tmux = tmux;
   }
 
   attach(ws: WebSocket, session: Session): void {
@@ -94,32 +96,58 @@ export class TerminalBridge {
     this.tracker.setAttached(session.id, true);
 
     // The seed's width barrier: the capture must happen after the client's
-    // first init/resize has been applied to the PTY, so tmux renders the
-    // history at the client's size rather than the 80x24 spawn size.
+    // first init/resize has been applied — to the PTY *and* to the window
+    // (web-first sizing) — so tmux renders the history at the client's size
+    // rather than the 80x24 spawn size.
     let signalResize: () => void = () => {};
     const firstResize = new Promise<void>((resolve) => {
       signalResize = resolve;
     });
     // Seed depth follows the client's declared scrollback (D7): the value
     // arrives with the same init frame as the geometry, before the capture.
-    let seedLines = DEFAULT_SEED_LINES;
+    // On-demand expansions (the client scrolled to the top of its buffer)
+    // rewrite it and re-seed deeper — tmux keeps up to MAX_SEED_LINES.
+    const seedDepth = { lines: DEFAULT_SEED_LINES };
 
-    wirePtyToSocket(ws, pty, () => {
+    // Web-first sizing (window-size manual): the browser's geometry is the
+    // only thing that sizes the pane. The barrier opens after the window
+    // has actually been resized, so the seed that follows renders at the
+    // client's width.
+    const applyClientGeometry = (cols: number, rows: number): void => {
+      void (async () => {
+        try {
+          await this.tmux.resizeWindow(session.tmuxName, cols, rows);
+        } catch {
+          // window gone / tmux hiccup: the barrier must still open; the
+          // seed then renders at whatever size the pane kept
+        } finally {
+          signalResize();
+        }
+      })();
+    };
+
+    const wire = wirePtyToSocket(ws, pty, () => {
       if (this.clients.get(session.id) === client) {
         this.clients.delete(session.id);
         this.tracker.setAttached(session.id, false);
       }
     }, {
-      onResize: signalResize,
+      onResize: applyClientGeometry,
       onInit: (message) => {
         if (
           typeof message.scrollback === "number" &&
           Number.isFinite(message.scrollback)
         ) {
-          seedLines = Math.min(Math.max(Math.round(message.scrollback) - 10, 10), MAX_SEED_LINES);
+          seedDepth.lines = clampSeedLines(message.scrollback - 10, DEFAULT_SEED_LINES);
         }
       },
-      holdOutputUntil: this.seedFor(pty, session.tmuxName, firstResize, () => seedLines),
+      onHistory: (lines) => {
+        // The client exhausted its local buffer: re-seed deeper. The window
+        // is already at the client's size, so the width barrier is a no-op.
+        seedDepth.lines = lines;
+        wire.reseed(this.seedFor(pty, session.tmuxName, Promise.resolve(), () => seedDepth.lines));
+      },
+      holdOutputUntil: this.seedFor(pty, session.tmuxName, firstResize, () => seedDepth.lines),
     });
 
     ws.on("close", () => {
@@ -132,30 +160,36 @@ export class TerminalBridge {
         }
         this.clients.delete(session.id);
         this.tracker.setAttached(session.id, false);
+        // Last web client gone: the pane is pinned to this browser's
+        // geometry — hand the size back to whatever client remains so a
+        // plain terminal is not left viewing a cropped window.
+        void this.tmux.restoreWindowSize(session.tmuxName);
       }
     });
   }
 
-  /** Connect-time history seed (D7). tmux's attach protocol only ever sends
-      the current screen, so a freshly opened page would have nothing to
-      scroll. capture-pane renders the pane's own history as a linear escape
-      document at the pane's current width; those bytes are forwarded
-      verbatim to the connecting client and used for nothing else — no
-      parsing, no logging, no persistence. The capture is gated on the
-      client's first init/resize and the repaint it forces, so the seed
-      renders at the client's width; a socket that never resizes falls back
-      to a timed capture at the spawn size. */
+  /** Connect-time history seed (D7), also re-run on demand for deeper
+      scrollback. tmux's attach protocol only ever sends the current screen,
+      so a freshly opened page would have nothing to scroll. capture-pane
+      renders the pane's own history as a linear escape document at the
+      pane's current width; those bytes are forwarded verbatim to the
+      connecting client and used for nothing else — no parsing, no logging,
+      no persistence. The capture is gated on `barrier` (the client's first
+      init/resize and the repaint it forces) so the seed renders at the
+      client's width; a socket that never resizes falls back to a timed
+      capture at the spawn size. On-demand re-seeds pass an already-resolved
+      barrier — the window is already at the client's size. */
   private seedFor(
     pty: nodePty.IPty,
     tmuxName: string,
-    firstResize: Promise<void>,
+    barrier: Promise<void>,
     seedLines: () => number,
-  ): Promise<Buffer | null> {
-    const barrier = Promise.race([
-      firstResize.then(() => nextOutput(pty)),
+  ): Promise<SeedPayload> {
+    const settled = Promise.race([
+      barrier.then(() => nextOutput(pty)),
       delay(FIRST_OUTPUT_TIMEOUT_MS),
     ]);
-    return barrier
+    return settled
       .then(() =>
         execa(
           "tmux",
@@ -172,11 +206,18 @@ export class TerminalBridge {
         ),
       )
       .then((probe) => {
+        // Read the depth HERE, not at call time: the client's declared
+        // scrollback arrives with its init frame, which lands while the
+        // barrier is still open.
+        const requested = seedLines();
         // No history above the screen: `-E -1` would clamp to line 0 and
         // return the first VISIBLE line, which the attach repaint then
         // sends again — a duplicated line at the seam on every fresh
         // session. Skip the seed instead.
-        if (probe.failed || Number(probe.stdout.trim()) === 0) return null;
+        const historySize = probe.failed ? 0 : Number(probe.stdout.trim());
+        if (!Number.isFinite(historySize) || historySize === 0) {
+          return { seed: null, lines: 0, complete: true };
+        }
         return execa(
           "tmux",
           [
@@ -187,7 +228,7 @@ export class TerminalBridge {
             "-e",
             "-T",
             "-S",
-            `-${seedLines()}`,
+            `-${requested}`,
             "-E",
             "-1",
             "-t",
@@ -197,11 +238,17 @@ export class TerminalBridge {
         ).then((r) =>
           // execa 10 binary output is a plain Uint8Array, not a Buffer
           r.stdout instanceof Uint8Array && r.stdout.length > 0
-            ? normalizeSeedLineEndings(r.stdout)
-            : null,
+            ? {
+                seed: normalizeSeedLineEndings(r.stdout),
+                // capture-pane returns at most `requested` lines
+                lines: Math.min(requested, historySize),
+                // fewer lines than asked = the pane's history is exhausted
+                complete: historySize <= requested,
+              }
+            : { seed: null, lines: 0, complete: true },
         );
       })
-      .catch(() => null);
+      .catch(() => ({ seed: null, lines: 0, complete: true }));
   }
 }
 

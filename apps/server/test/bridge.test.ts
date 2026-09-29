@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execa } from "execa";
 import { expect, it } from "vitest";
 import type { Session } from "@shellboard/contracts";
 import type { Services } from "../src/services";
@@ -214,13 +215,65 @@ it("captures the history seed at the client's size, not the spawn size (D7)", as
   const seedFrame = second.frames.slice(seedStartAt + 1).find((frame) => frame.binary);
   expect(seedFrame?.data.toString("utf8")).toContain("L".repeat(150));
 
+  // Web-first sizing: the pane itself must be at the client's geometry, not
+  // the 80x24 spawn size — otherwise a plain terminal attached elsewhere
+  // would keep the window narrow and the agent output would not fill the
+  // browser terminal.
+  const width = await execa(
+    "tmux",
+    [
+      "-L",
+      services.config.tmuxSocket,
+      "display-message",
+      "-p",
+      "-t",
+      session.tmuxName,
+      "#{window_width}",
+    ],
+    { reject: false },
+  );
+  expect(width.stdout.trim()).toBe("200");
+
+  second.close();
+  await services.sessions.kill(session.id);
+});
+
+it("expands history on demand when the client scrolls to the top (D7)", async () => {
+  const { services, session } = await createBashSession();
+
+  // Produce history through a first client, then leave.
+  const first = new FakeWS();
+  attach(services, first, session);
+  await waitFor(() => first.output().length > 0);
+  first.emitMessage("for i in $(seq 1 120); do echo hist-$i; done\r", true);
+  await waitFor(() => first.output().includes("hist-120"));
+  first.close();
+  await sleep(300);
+
+  // A fresh attach with a SHALLOW declared scrollback: the connect-time
+  // seed reaches only that deep (scrollback - 10), so the head of the
+  // history is not on the wire yet.
+  const second = new FakeWS();
+  services.bridge.attach(second.asWebSocket(), session);
+  second.emitMessage(JSON.stringify({ type: "init", cols: 80, rows: 24, scrollback: 50 }));
+  await waitFor(() => second.output().includes("hist-120"));
+  const seedStarts = (): string[] => second.text.filter((t) => t.includes("seed-start"));
+  expect(seedStarts()).toHaveLength(1);
+  expect(seedStarts()[0]).toContain('"lines":40');
+  expect(second.output()).not.toContain("hist-1\r\n");
+
+  // The client exhausts its buffer and asks for the full history: a second
+  // seed replaces the first and reports the pane exhausted.
+  second.emitMessage(JSON.stringify({ type: "history", lines: 49990 }));
+  await waitFor(() => seedStarts().length === 2 && second.output().includes("hist-1\r\n"));
+  expect(seedStarts()[1]).toContain('"complete":true');
+  expect(seedStarts()[1]).not.toContain('"lines":40');
+
   second.close();
   await services.sessions.kill(session.id);
 });
 
 it("delivers arrow keys to alternate-screen apps as ordinary input", async () => {
-  // The web client scrolls its local mirror for normal panes; for
-  // alternate-screen apps it sends arrow keys as ORDINARY INPUT.
   const { services, dir, session } = await createBashSession();
   const ws = new FakeWS();
   attach(services, ws, session);
