@@ -14,8 +14,9 @@ import {
   decideReconcile,
   isSlowTransfer,
   nextHistoryDepthAfterSeedStart,
-  RECONCILE_DEPTH,
   RECONCILE_SETTLE_MS,
+  restoreCoveredReader,
+  restoredViewportY,
 } from "./historyReconcile";
 
 export type TerminalStatus =
@@ -184,6 +185,9 @@ export function useTerminalWs(path: string): TerminalApi {
       // fires is not read as a user gesture.
       let programmaticScrollAt = 0;
       let reconcileSettleTimer: number | null = null;
+      // When the server last sent us bytes. A pane still producing output is
+      // mid-repaint, and a snapshot of it is a half-written state.
+      let lastOutputAt = 0;
 
       const termTheme = readTerminalTheme();
       const term = new Terminal({
@@ -324,13 +328,13 @@ export function useTerminalWs(path: string): TerminalApi {
             expanding,
             outputSinceReconcile,
             gesturedSinceReseed,
-            viewportY: buf.viewportY,
-            baseY: buf.baseY,
+            quietForMs: Date.now() - lastOutputAt,
+            offsetFromBottom: buf.baseY - buf.viewportY,
+            rows: term.rows,
             lastReconcileAt,
             now: Date.now(),
             wsOpen: true,
             slowLink,
-            reconcileDepth: RECONCILE_DEPTH,
           });
           if (!decision) return;
           expanding = true;
@@ -389,7 +393,19 @@ export function useTerminalWs(path: string): TerminalApi {
         }
         const scrollable = term.buffer.active.length > term.rows;
         if (!scrollable) return;
-        if (lines > 0) userPinnedRef.current = true;
+        if (lines > 0) {
+          userPinnedRef.current = true;
+          // At the top of the buffer and still scrolling into history: this is
+          // the "load more" gesture. scrollLines cannot move the viewport from
+          // here, so onScroll never fires and nothing else would notice the
+          // request — which is how the terminal ends up stuck at the top of a
+          // short buffer after a reconcile replaced it. Count the gesture and
+          // ask for more right here.
+          if (term.buffer.active.viewportY <= 0) {
+            gesturedSinceReseed = true;
+            maybeExpandHistory();
+          }
+        }
         term.scrollLines(-lines);
         const buf = term.buffer.active;
         const bottom = buf.viewportY >= buf.baseY;
@@ -794,17 +810,29 @@ export function useTerminalWs(path: string): TerminalApi {
                 expanding = false;
                 if (!from) return;
                 const buf = term.buffer.active;
-                const offsetFromBottom = from.baseY - from.viewportY;
+                // A restore that clamped means the seed did not reach the
+                // reader — they were deeper in history than the capture
+                // covered. That repair did not do its job, so leave the
+                // gesture open: waiting for the next scroll would mean
+                // waiting forever for something that already failed.
+                if (!restoreCoveredReader(from, buf.baseY)) {
+                  gesturedSinceReseed = true;
+                  // They are now sitting at the top of a buffer that does not
+                  // contain what they were reading, and scrolling further
+                  // cannot move the viewport — so onScroll will never fire and
+                  // the growth path would never be asked. Ask now, or the
+                  // terminal is simply stuck there.
+                  maybeExpandHistory();
+                }
                 programmaticScrollAt = Date.now();
-                term.scrollToLine(
-                  Math.max(0, Math.min(buf.baseY - offsetFromBottom, buf.baseY)),
-                );
+                term.scrollToLine(restoredViewportY(from, buf.baseY));
               });
               return;
             }
             // Live bytes. New output is the only thing that makes held
             // history stale, so this is what arms a reconcile.
             outputSinceReconcile = true;
+            lastOutputAt = Date.now();
             term.write(new Uint8Array(event.data));
             return;
           }
@@ -850,7 +878,14 @@ export function useTerminalWs(path: string): TerminalApi {
                 requestedSeedDepth,
                 historyDepth,
               );
-              if (reSeeding) {
+              // A reconcile replaces the buffer with exactly what it pulled, so
+              // the held depth is now the requested one — not the deeper depth
+              // the client used to hold. Reporting the old number would make
+              // the scroll-to-top ladder ask for 3x a depth the buffer does not
+              // have, and skip the reader past it.
+              if (requestedSeedDepth < historyDepth && typeof message.lines === "number") {
+                historyDepth = Math.max(requestedSeedDepth, message.lines);
+              }              if (reSeeding) {
                 // Remember where the user was reading, as an offset from the
                 // live bottom. The seed replaces the buffer, so only that
                 // offset survives — see the restore above.

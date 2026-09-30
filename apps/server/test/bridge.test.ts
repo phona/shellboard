@@ -4,9 +4,40 @@ import { execa } from "execa";
 import { expect, it } from "vitest";
 import type { Session } from "@shellboard/contracts";
 import type { Services } from "../src/services";
+import { dropTrailingLineFeed } from "../src/terminal/bridge";
 import { afterAllCleanup, createServices, FakeWS, makeTempDir, sleep, waitFor } from "./helpers";
 
 afterAllCleanup();
+
+describe("dropTrailingLineFeed (screen-inclusive seed)", () => {
+  // The CRLF rewrite in normalizeSeedLineEndings turns a trailing LF into a
+  // scroll, which would shift a screen-inclusive seed up by one row. That
+  // off-by-one is what starts the drift cascade.
+  it("drops a trailing LF", () => {
+    expect(dropTrailingLineFeed(Buffer.from("a\r\nb\r\n")).toString()).toBe("a\r\nb");
+  });
+
+  it("drops a trailing CRLF pair", () => {
+    expect(dropTrailingLineFeed(Buffer.from("a\r\nb\r\n")).toString()).toBe("a\r\nb");
+  });
+
+  it("leaves a seed with no trailing line feed alone", () => {
+    expect(dropTrailingLineFeed(Buffer.from("a\r\nb")).toString()).toBe("a\r\nb");
+    expect(dropTrailingLineFeed(Buffer.from("a\r\n")).toString()).toBe("a");
+  });
+
+  it("handles an empty seed", () => {
+    expect(dropTrailingLineFeed(Buffer.alloc(0)).toString()).toBe("");
+  });
+
+  it("only removes one line feed, not the content", () => {
+    expect(dropTrailingLineFeed(Buffer.from("a\n\n")).toString()).toBe("a\n");
+  });
+
+  it("keeps interior line feeds", () => {
+    expect(dropTrailingLineFeed(Buffer.from("a\r\nb\r\nc\r\n")).toString()).toBe("a\r\nb\r\nc");
+  });
+});
 
 let counter = 0;
 
@@ -282,12 +313,28 @@ it("does not replay the capture window on top of the snapshot re-seed", async ()
 
   // A pane streaming while the client is up in history: the exact case where
   // a re-seed used to duplicate rows.
-  ws.emitMessage("i=0; while [ $i -lt 100000 ]; do echo stream-$i; i=$((i+1)); done\r", true);
-  await waitFor(() => ws.output().includes("stream-300"));
+  // Paced with gaps: a producer that never holds still is refused by the
+  // quiescence guard (correctly — its snapshot would be half-written), so the
+  // capture-window property is exercised against a pane that settles between
+  // bursts while still producing during the hold.
+  ws.emitMessage(
+    "i=0; while [ $i -lt 100000 ]; do i=$((i+1)); echo stream-$i; sleep 0.4; done\r",
+    true,
+  );
+  // Paced wider than the settle window: the pane must hold still long enough
+  // for the quiescence guard to accept a snapshot at all, or the re-seed is
+  // refused and there is no capture window to inspect.
+  await waitFor(() => ws.output().includes("stream-2"));
 
   // Ask for a re-seed while the pane is still producing.
+  // The connect-time seed is a seed-skipped when the pane has no history yet
+  // (correct: resetting for nothing is worse), so count the delta rather than
+  // assuming a fixed total.
+  const seedStartsBefore = ws.text.filter((t) => t.includes("seed-start")).length;
   ws.emitMessage(JSON.stringify({ type: "history", lines: 500 }));
-  await waitFor(() => ws.text.filter((t) => t.includes("seed-start")).length === 2);
+  await waitFor(
+    () => ws.text.filter((t) => t.includes("seed-start")).length > seedStartsBefore,
+  );
 
   // The seed is a snapshot of the pane at the moment capture-pane read it.
   // Everything the server sends after it must be strictly newer — otherwise
@@ -336,6 +383,112 @@ it("does not replay the capture window on top of the snapshot re-seed", async ()
   ws.close();
   await services.sessions.kill(session.id);
 }, 30_000);
+
+it("includes the visible screen in an on-demand re-seed, not just history", async () => {
+  const { services, session } = await createBashSession();
+
+  const ws = new FakeWS();
+  attach(services, ws, session);
+  await waitFor(() => ws.output().length > 0);
+
+  // Push the marker up into history so only a screen-inclusive capture can
+  // still see it.
+  ws.emitMessage("for i in $(seq 1 60); do echo hist-$i; done; echo SCREEN-MARKER\r", true);
+  await waitFor(() => ws.output().includes("SCREEN-MARKER"));
+  await sleep(300);
+
+  // The connect-time seed is a seed-skipped when the pane has no history yet
+  // (correct: resetting for nothing is worse), so count the delta rather than
+  // assuming a fixed total.
+  const seedStartsBefore = ws.text.filter((t) => t.includes("seed-start")).length;
+  ws.emitMessage(JSON.stringify({ type: "history", lines: 500 }));
+  await waitFor(
+    () => ws.text.filter((t) => t.includes("seed-start")).length > seedStartsBefore,
+  );
+
+  // Live bytes flow while the capture runs (the hold opens only after it), so
+  // the seed is the first binary frame after the seed-start, not the first
+  // binary frame after the request.
+  const seedStarts = ws.frames.filter(
+    (frame) => !frame.binary && frame.data.toString("utf8").includes("seed-start"),
+  );
+  const lastSeedStart = ws.frames.lastIndexOf(seedStarts[seedStarts.length - 1]!);
+  const seedFrame = ws.frames.slice(lastSeedStart + 1).find((frame) => frame.binary);
+  expect(seedFrame).toBeDefined();
+  const seed = seedFrame!.data.toString("utf8");
+
+  // History above the screen...
+  expect(seed).toContain("hist-20");
+  // ...and the visible screen itself. Without this the client resets to a
+  // blank pane and only recovers when the pane next changes.
+  expect(seed).toContain("SCREEN-MARKER");
+
+  ws.close();
+  await services.sessions.kill(session.id);
+});
+
+it("never seeds a screen that is a half-finished repaint", async () => {
+  const { services, session } = await createBashSession();
+
+  const ws = new FakeWS();
+  attach(services, ws, session);
+  await waitFor(() => ws.output().length > 0);
+
+  // A long command sent before the shell is reading gets garbled, and the
+  // failure looks like a missing producer. Confirm the shell takes input first.
+  ws.emitMessage("echo PROBE-READY\r", true);
+  await waitFor(() => ws.output().includes("PROBE-READY"));
+
+  // A streaming agent TUI: each generation is 40 rows bracketed by HEAD and
+  // END, drawn slowly (~200ms) and then held (~80ms). The hold is what lets the
+  // quiescence guard settle; the long draw is what makes an unguarded capture
+  // land mid-repaint. capture-pane is always internally consistent, so "half
+  // drawn" is never a torn read — it is a whole snapshot of a pane that really
+  // was mid-write, whose last row is a `line NN` instead of END.
+  ws.emitMessage(
+    "g=0; while [ $g -lt 120 ]; do g=$((g+1)); printf '\\e[H\\e[2J'; " +
+      "printf 'gen %04d HEAD\\r\\n' $g; " +
+      "for j in $(seq 2 39); do printf 'gen %04d line %02d\\r\\n' $g $j; sleep 0.005; done; " +
+      "printf 'gen %04d END\\r\\n' $g; sleep 0.3; done\r",
+    true,
+  );
+  await waitFor(() => ws.binary.length > 100);
+  expect(ws.output()).toContain("HEAD");
+  // The connect-time seed is history-only (`-E -1`) and lands before the
+  // producer starts, so its tail is whatever had just scrolled off — pane
+  // truth, not a truncation. Only screen-inclusive re-seeds are under test.
+  const seedsFrom = ws.frames.length;
+
+  // Ask several times: a pane that repaints most of the time yields a
+  // mid-repaint snapshot on most captures, so one request would be a coin flip
+  // and the regression would only show up intermittently.
+  for (let i = 0; i < 8; i += 1) {
+    ws.emitMessage(JSON.stringify({ type: "history", lines: 300 }));
+    await sleep(320);
+  }
+
+  // Every seed that came back must be a finished repaint. THE SYMPTOM: before
+  // the quiescence guard, at least one of these had a `line NN` as its last
+  // row — the reader saw the newest message cut off mid-sentence, completed a
+  // moment later when the live stream caught up.
+  const seedTexts: string[] = [];
+  for (let i = seedsFrom; i < ws.frames.length; i += 1) {
+    const frame = ws.frames[i]!;
+    if (frame.binary || !frame.data.toString("utf8").includes("seed-start")) continue;
+    const seed = ws.frames.slice(i + 1).find((f) => f.binary);
+    if (seed) seedTexts.push(seed.data.toString("utf8"));
+  }
+  // Not vacuous: the pane does settle between generations, so seeds do arrive.
+  expect(seedTexts.length).toBeGreaterThan(0);
+  for (const text of seedTexts) {
+    const rows = text.split("\r\n").filter((r) => r.trim() !== "");
+    const screen = rows.slice(-24);
+    expect(screen[screen.length - 1]!.trim()).toMatch(/END$/);
+  }
+
+  ws.close();
+  await services.sessions.kill(session.id);
+}, 60_000);
 
 it("delivers arrow keys to alternate-screen apps as ordinary input", async () => {
   const { services, dir, session } = await createBashSession();

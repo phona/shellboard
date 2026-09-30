@@ -134,7 +134,12 @@ export function wirePtyToSocket(
     held = [];
     heldBytes = 0;
     if (ws.readyState !== WebSocket.OPEN) return;
-    const sendSeed = bufferedBytes <= HELD_MAX_BYTES;
+    // A null seed must never be announced as a seed-start: the client resets
+    // its buffer on that frame and would then wait forever for bytes that are
+    // not coming — a wiped terminal with nothing behind it. seed-skipped keeps
+    // what the client already has, which is always the better failure.
+    const hasSeed = payload.seed !== null && payload.seed.length > 0;
+    const sendSeed = hasSeed && bufferedBytes <= HELD_MAX_BYTES;
     if (sendSeed) {
       sendControl(ws, { type: "seed-start", lines: payload.lines, complete: payload.complete });
     } else {
@@ -142,8 +147,8 @@ export function wirePtyToSocket(
       // mistake the first held live frame for the omitted seed.
       sendControl(ws, { type: "seed-skipped" });
     }
-    if (sendSeed && payload.seed !== null && payload.seed.length > 0) {
-      ws.send(payload.seed, { binary: true });
+    if (sendSeed) {
+      ws.send(payload.seed!, { binary: true });
     }
     for (const chunk of buffered) {
       ws.send(chunk, { binary: true });

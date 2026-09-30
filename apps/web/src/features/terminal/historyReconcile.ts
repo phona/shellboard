@@ -10,26 +10,41 @@ export const MAX_HISTORY_LINES = 49990;
     stays clean (capture-pane gives one line per row), so the client buffer
     is a *cache* of pane truth and has to be re-pulled to be trusted.
 
-    This module owns only the guards. The hook owns the mutable state (last
-    reconcile time, slow-link flag, output-since-reconcile, whether the user
-    has scrolled since the last re-seed); everything the decision needs is
-    passed in as plain data so it is testable off one clock. */
+    This module owns only the guards and the depth policy. The hook owns the
+    mutable state (last reconcile time, slow-link flag, output-since-reconcile,
+    whether the user has scrolled since the last re-seed); everything the
+    decision needs is passed in as plain data so it is testable off one clock. */
 
-/** Shallow depth for the reconcile re-pull. Only the stretch the user is
-    actually reading has to be realigned, and a shallow capture keeps the
-    re-seed — which clears the client buffer before repainting — cheap
-    enough to run while a pane is streaming. The trade is deliberate:
-    deeper history is dropped by a reconcile and grown back on demand by
-    the scroll-to-top path, which is the user's own explicit request. */
-export const RECONCILE_DEPTH = 500;
+/** A reconcile pulls only as deep as the reader actually is. A fixed depth
+    fails in both directions: too shallow and the seed does not reach a reader
+    who is far up in history, so the restore clamps and they are thrown to the
+    top of a buffer that does not contain what they were reading — which reads
+    as "the repair did nothing". Too deep and every repair near the live edge
+    pays for history nobody is looking at, on a link where that is the dominant
+    cost.
 
-/** Scroll must settle for this long before a reconcile may fire. A user
-    still scrolling must never have the buffer swapped underneath them —
-    the gesture is a read, not a refresh request, until it stops. */
-export const RECONCILE_SETTLE_MS = 1500;
+    The floor is deliberately the old fixed depth, not lower: a reconcile
+    replaces the whole buffer, so whatever it pulls is all the history the
+    reader has afterwards. A floor below the previous behaviour would make
+    every repair silently shorten their transcript. */
+export const RECONCILE_MIN_DEPTH = 500;
+
+/** Context below the reader, so the repair is not a viewport-sized slit. */
+export const RECONCILE_CONTEXT_LINES = 40;
+
+/** Ceiling. Past this the reader is doing deep archaeology, which the
+    scroll-to-top path exists for — it is their explicit request and grows the
+    buffer for good, unlike a reconcile that drops it again. */
+export const RECONCILE_MAX_DEPTH = 800;
+
+/** Scroll must settle for this long before a reconcile may fire. A user still
+    scrolling must never have the buffer swapped underneath them. The rest of
+    the repair costs ~30ms (capture 8ms, client repaint ~20ms), so a long
+    settle buys nothing and is most of what the reader waits. */
+export const RECONCILE_SETTLE_MS = 400;
 
 /** Backstop cooldown between automatic reconciles. The gesture requirement
-    already bounds this to one per scroll-stop; the cooldown only stops a
+    bounds this to one per scroll-stop; the cooldown only stops a
     stop-scroll-stop cycle from strobing the buffer. */
 export const RECONCILE_MIN_INTERVAL_MS = 5000;
 
@@ -45,6 +60,35 @@ export const SLOW_LINK_RECONCILE_INTERVAL_MS = 15_000;
     the live view is the pane's current screen and is already exact. */
 export const RECONCILE_MIN_OFF_BOTTOM = 8;
 
+/** A reconcile only fires once the pane has been quiet for this long. A
+    repaint-heavy agent redraws continuously, and a snapshot taken while it
+    does is a whole but half-written state — which reaches the reader as a
+    message cut off mid-sentence, completed a moment later when the live
+    stream catches up. Repairing a drifting buffer is only worth it when the
+    result will not itself be truncated, so wait for the pane to settle; a
+    pane that repaints without pause is repaired the moment it stops. */
+export const RECONCILE_QUIET_MS = 500;
+
+/** How deep a reconcile should pull for a reader this far above the live
+    bottom. Covers the reader, their viewport, and a little context. */
+export function reconcileDepth(offsetFromBottom: number, rows: number): number {
+  const wanted = offsetFromBottom + rows + RECONCILE_CONTEXT_LINES;
+  return Math.min(RECONCILE_MAX_DEPTH, Math.max(RECONCILE_MIN_DEPTH, wanted));
+}
+
+/** Whether a re-seed actually put the reader back where they were.
+
+    A restore clamps when the seed did not reach them — they were deeper in
+    history than the capture covered. That repair did not do its job, so it
+    must not count as one: the gesture gate has to stay open for a retry,
+    otherwise the reader waits forever for a repair that already failed. */
+export function restoreCoveredReader(
+  previous: { viewportY: number; baseY: number },
+  newBaseY: number,
+): boolean {
+  return newBaseY >= previous.baseY - previous.viewportY;
+}
+
 /** Everything the scroll-triggered reconcile decision needs, as plain data. */
 export interface ReconcileInput {
   /** The connect-time history seed has landed. */
@@ -55,15 +99,20 @@ export interface ReconcileInput {
   /** New output arrived since the last re-seed — drift only comes from new
       output, so a quiet history must not re-pull the same bytes. */
   outputSinceReconcile: boolean;
-  /** The user has scrolled since the last re-seed. Without this a single
-      reconcile would re-arm itself forever on a streaming pane: every
-      re-seed leaves stale content again as soon as the next repaint lands,
-      and the terminal would strobe between two buffers once per cooldown.
-      One clean-up per deliberate scroll-stop is the contract. */
+  /** The user has scrolled since the last re-seed, or the last re-seed failed
+      to reach them. Without this a single reconcile would re-arm itself
+      forever on a streaming pane: every re-seed leaves stale content again as
+      soon as the next repaint lands, and the terminal would strobe between
+      two buffers once per cooldown. */
   gesturedSinceReseed: boolean;
-  /** xterm buffer geometry: where the viewport sits vs. the live bottom. */
-  viewportY: number;
-  baseY: number;
+  /** Milliseconds since the last byte arrived from the server. A pane still
+      producing output is mid-repaint, and a snapshot of it is truncated. */
+  quietForMs: number;
+  /** How far the viewport sits above the live bottom. */
+  offsetFromBottom: number;
+  /** Terminal height, so the pulled depth covers the viewport and not just
+      the reader's row. */
+  rows: number;
   /** When the last re-seed went out (epoch ms). */
   lastReconcileAt: number;
   /** Current time (epoch ms) — passed in, not read, so the decision is
@@ -73,38 +122,43 @@ export interface ReconcileInput {
   wsOpen: boolean;
   /** The link has proven too slow for a full re-render; reconciles back off. */
   slowLink: boolean;
-  /** Depth to re-pull at — shallow, so the buffer clear stays cheap. */
-  reconcileDepth: number;
 }
 
 /** Decide whether a settled scroll should trigger a transcript re-pull, and
     at what depth. Returns null when any guard says no — the guards are
     ordered cheapest-first and must stay in sync with the hook's semantics:
     never reconcile before the seed lands, while a re-seed is in flight,
-    without new output to realign, without a scroll to ask for it, near the
-    live bottom, inside the cooldown, or with the socket down. */
+    without new output to realign, without a scroll or a failed repair to ask
+    for it, while the pane is still producing output, near the live bottom,
+    inside the cooldown, or with the socket down. */
 export function decideReconcile(input: ReconcileInput): { depth: number } | null {
   const {
     seeded,
     expanding,
     outputSinceReconcile,
     gesturedSinceReseed,
-    viewportY,
-    baseY,
+    quietForMs,
+    offsetFromBottom,
+    rows,
     lastReconcileAt,
     now,
     wsOpen,
     slowLink,
-    reconcileDepth,
   } = input;
   if (!seeded || expanding) return null;
   if (!outputSinceReconcile) return null; // nothing new to realign
   if (!gesturedSinceReseed) return null; // one clean-up per scroll-stop
-  if (viewportY > baseY - RECONCILE_MIN_OFF_BOTTOM) return null;
+  if (quietForMs < RECONCILE_QUIET_MS) return null; // pane still repainting
+  if (offsetFromBottom < RECONCILE_MIN_OFF_BOTTOM) return null;
+  // A reader this far up cannot be reached by a capped pull. Repairing anyway
+  // would clamp the restore and flicker for nothing, over and over — the
+  // scroll-to-top growth path is the right tool there, and it is the reader's
+  // own explicit request.
+  if (offsetFromBottom > RECONCILE_MAX_DEPTH) return null;
   const cooldown = slowLink ? SLOW_LINK_RECONCILE_INTERVAL_MS : RECONCILE_MIN_INTERVAL_MS;
   if (now - lastReconcileAt < cooldown) return null;
   if (!wsOpen) return null;
-  return { depth: reconcileDepth };
+  return { depth: reconcileDepth(offsetFromBottom, rows) };
 }
 
 /** How the held history depth reacts to a seed-start payload. The server
@@ -131,4 +185,28 @@ export function nextHistoryDepthAfterSeedStart(
     threshold. */
 export function isSlowTransfer(seedStartedAt: number, now: number): boolean {
   return now - seedStartedAt > SLOW_LINK_MS;
+}
+
+/** Where the viewport should land after a re-seed replaces the buffer.
+
+    The seed is a snapshot, so `baseY` moves with whatever depth it happened
+    to carry — deeper, equal, or shallower than the buffer it replaced. What
+    the user chose is not a row number but a *distance from the live bottom*,
+    and that distance is invariant under all three, so it is the only thing
+    worth anchoring on.
+
+    The previous implementation anchored on the number of lines the server
+    reported having sent (`seedLines - baseY`), which silently assumed the new
+    seed is deeper. A shallow reconcile delivers fewer lines than the buffer
+    it replaces, so the anchor went negative and clamped to the top of a short
+    buffer — the user was thrown to the head of the history they were reading.
+    Distance from the bottom is also exact geometry rather than an
+    approximation of it: the server's line count excludes the visible screen,
+    so it under-reports by up to `rows`. */
+export function restoredViewportY(
+  previous: { viewportY: number; baseY: number },
+  newBaseY: number,
+): number {
+  const offsetFromBottom = previous.baseY - previous.viewportY;
+  return Math.max(0, Math.min(newBaseY - offsetFromBottom, newBaseY));
 }

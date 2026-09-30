@@ -18,7 +18,7 @@ const CALLED = ["decideReconcile(", "isSlowTransfer(", "nextHistoryDepthAfterSee
 
 /** Policy the hook must pass in rather than hard-code, so the module stays the
     single place the cadence is decided. */
-const PASSED_IN = ["RECONCILE_DEPTH", "RECONCILE_SETTLE_MS"] as const;
+const PASSED_IN = ["RECONCILE_SETTLE_MS"] as const;
 
 describe("historyReconcile is wired into the terminal hook", () => {
   for (const call of CALLED) {
@@ -42,5 +42,18 @@ describe("historyReconcile is wired into the terminal hook", () => {
   it("re-arms on live output, not on a timer", () => {
     // Drift only comes from new output. A quiet pane must never re-pull.
     expect(hookSource).toMatch(/outputSinceReconcile = true/);
+  });
+
+  it("grows the buffer when the reader scrolls into history at the top", () => {
+    // Regression: growth was only reachable from onScroll, and scrollLines
+    // cannot move the viewport from row 0 — so a reader already at the top
+    // scrolling further fired no event at all and the terminal was stuck.
+    expect(hookSource).toMatch(/viewportY <= 0\)\s*\{[\s\S]*maybeExpandHistory\(\)/);
+  });
+
+  it("grows the buffer when a re-seed clamped the reader's position", () => {
+    // Regression: a reconcile that did not reach the reader left them at the
+    // top of a short buffer with no way to ask for more.
+    expect(hookSource).toMatch(/restoreCoveredReader\(from, buf\.baseY\)\)\s*\{[\s\S]*maybeExpandHistory\(\)/);
   });
 });
