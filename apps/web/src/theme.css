@@ -28,6 +28,7 @@
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --topbar-h: 42px;
   --statusbar-h: 26px;
+  --term-keys-h: 44px;
 }
 
 [data-theme="dark"] {
@@ -593,28 +594,29 @@ button:focus-visible {
   background: var(--term-bg);
 }
 
-/* Off-bottom indicator: floats over the terminal's bottom-right corner —
-   one tap anywhere on it resumes follow (the only touch path back). */
+/* Off-bottom indicator: one tap resumes follow (the only touch path back). */
 .live-pill {
   position: absolute;
-  right: 16px;
-  bottom: 16px;
+  right: 12px;
+  bottom: 12px;
   z-index: 5;
   display: inline-flex;
   align-items: center;
-  min-height: 26px;
-  padding: 4px 12px;
-  border: none;
-  border-radius: 999px;
-  background: var(--accent-strong);
-  color: var(--accent-text);
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--text-muted);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--text);
   font-size: 12px;
+  font-weight: 600;
   box-shadow: var(--shadow);
   cursor: pointer;
 }
 
 .live-pill:hover {
-  opacity: 0.9;
+  background: color-mix(in srgb, var(--surface-hover) 94%, transparent);
 }
 
 .terminal-head {
@@ -1430,6 +1432,10 @@ button:focus-visible {
   gap: 8px;
 }
 
+body:has(.live-pill) .toast-stack {
+  bottom: 60px;
+}
+
 .toast {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1517,6 +1523,7 @@ button:focus-visible {
   display: flex;
   align-items: stretch;
   flex: none;
+  height: var(--term-keys-h);
   background: var(--surface);
   border-top: 1px solid var(--border);
 }
@@ -1530,7 +1537,7 @@ button:focus-visible {
   color: var(--text-muted);
   font-family: var(--mono);
   font-size: 12px;
-  padding: 13px 0;
+  padding: 0;
 }
 
 .term-keys button:hover {
@@ -1695,13 +1702,23 @@ button:focus-visible {
 }
 
 /* Bottom bar on phones is only the terminal key row (.term-keys); pane
-   toggles live in the top bar. Toasts and the live pill clear the key row
-   height. */
+   toggles live in the top bar. */
 @media (max-width: 760px) {
+  .live-pill {
+    right: 12px;
+    bottom: calc(var(--term-keys-h) + 8px);
+    min-height: 44px;
+    min-width: 44px;
+  }
+
   .toast-stack {
     left: 16px;
     right: 16px;
     bottom: calc(50px + env(safe-area-inset-bottom));
+  }
+
+  body:has(.live-pill) .toast-stack {
+    bottom: calc(var(--term-keys-h) + 64px + env(safe-area-inset-bottom));
   }
 
   .toast {

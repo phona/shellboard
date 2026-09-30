@@ -269,9 +269,10 @@ export function TerminalView({
           type="button"
           className="live-pill"
           onClick={terminal.goLive}
-          title="Jump back to the live view (Ctrl+End)"
+          onMouseDown={(event) => event.preventDefault()}
+          title="Jump to latest output (Ctrl+End)"
         >
-          ↓ live
+          ↓ Latest
         </button>
       )}
 
