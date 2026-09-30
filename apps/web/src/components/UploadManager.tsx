@@ -18,11 +18,16 @@ function filesFromClipboard(data: DataTransfer | null): File[] {
 }
 
 /**
- * Workspace-level paste entry: pasting files or images anywhere outside a
- * typing target or the terminal uploads them into the selected session's
- * upload buffer. The terminal never sees its paste intercepted (.xterm is a
- * typing target), and no upload ever fires automatically — paste is the
- * user's gesture. Also renders the progress pill.
+ * Workspace-level paste entry, two lanes:
+ * - bubble lane: files/images pasted outside any typing target upload into
+ *   the selected session's upload buffer;
+ * - capture lane: when the terminal itself is focused, a clipboard holding
+ *   files but no text is diverted to the buffer — xterm consumes text/plain
+ *   only, so an image-only paste is a terminal no-op and this loses it
+ *   nothing. Any text in the clipboard means the terminal keeps the paste.
+ *
+ * No upload ever fires automatically — paste is the user's gesture. Also
+ * renders the progress pill.
  */
 export function UploadManager() {
   const selectedSessionId = useUi((state) => state.selectedSessionId);
@@ -30,12 +35,8 @@ export function UploadManager() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    const onPaste = (event: ClipboardEvent) => {
-      if (!selectedSessionId) return;
-      if (isTypingTarget(event.target)) return;
-      const files = filesFromClipboard(event.clipboardData);
-      if (files.length === 0) return;
-      event.preventDefault();
+    if (!selectedSessionId) return;
+    const start = (files: File[]) => {
       useUploads.getState().start({
         sessionId: selectedSessionId,
         files,
@@ -44,8 +45,33 @@ export function UploadManager() {
         },
       });
     };
+    const onPaste = (event: ClipboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+      const files = filesFromClipboard(event.clipboardData);
+      if (files.length === 0) return;
+      event.preventDefault();
+      start(files);
+    };
     window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
+    // xterm's own paste handler (xterm.js 6.0 handlePasteEvent) calls
+    // stopPropagation() unconditionally, so a bubble listener never sees
+    // terminal pastes; this capture listener is the only hook in front of it.
+    const onPasteCapture = (event: ClipboardEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || target.closest(".xterm") === null) return;
+      const data = event.clipboardData;
+      if (!data || data.getData("text/plain") !== "") return;
+      const files = filesFromClipboard(data);
+      if (files.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      start(files);
+    };
+    window.addEventListener("paste", onPasteCapture, true);
+    return () => {
+      window.removeEventListener("paste", onPaste);
+      window.removeEventListener("paste", onPasteCapture, true);
+    };
   }, [selectedSessionId, queryClient]);
 
   const current = tasks[0];
