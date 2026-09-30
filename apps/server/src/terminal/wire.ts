@@ -10,6 +10,7 @@ export type ClientControlMessage =
 export type ServerControlMessage =
   | { type: "taken-over" }
   | { type: "seed-start"; lines: number; complete: boolean }
+  | { type: "seed-skipped" }
   | { type: "ended" }
   | { type: "pong" };
 
@@ -112,29 +113,47 @@ export function wirePtyToSocket(
   let held: Buffer[] = [];
   let heldBytes = 0;
   const startHold = (payload: Promise<SeedPayload>): void => {
+    heldBytes = 0;
     hold = true;
     void payload.then(({ seed, lines, complete }) => {
       hold = false;
       if (ws.readyState !== WebSocket.OPEN) {
         held = [];
+        heldBytes = 0;
         return;
       }
       // The seed replaces whatever the client had: every attach (including
       // a reconnect) re-seeds from tmux, and appending it to a surviving
       // buffer would duplicate the whole transcript. The client clears its
       // buffer on this frame; the seed bytes then repaint the history.
-      sendControl(ws, { type: "seed-start", lines, complete });
-      if (seed !== null && seed.length > 0 && heldBytes <= HELD_MAX_BYTES) {
+      const sendSeed = heldBytes <= HELD_MAX_BYTES;
+      if (sendSeed) {
+        sendControl(ws, { type: "seed-start", lines, complete });
+      } else {
+        // The existing client buffer remains valid. Tell it not to reset or
+        // mistake the first held live frame for the omitted seed.
+        sendControl(ws, { type: "seed-skipped" });
+      }
+      if (sendSeed && seed !== null && seed.length > 0) {
         ws.send(seed, { binary: true });
       }
       for (const chunk of held) {
         ws.send(chunk, { binary: true });
       }
       held = [];
+      heldBytes = 0;
     });
   };
   if (options.holdOutputUntil) startHold(options.holdOutputUntil);
   let paused = false;
+  let drainTimer: ReturnType<typeof setInterval> | null = null;
+  const checkDrain = (): void => {
+    if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > WS_LOW_WATER) return;
+    if (drainTimer !== null) clearInterval(drainTimer);
+    drainTimer = null;
+    paused = false;
+    pty.resume();
+  };
   pty.onData((data) => {
     if (hold) {
       held.push(Buffer.from(data));
@@ -151,12 +170,13 @@ export function wirePtyToSocket(
     if (!paused && ws.bufferedAmount > WS_HIGH_WATER) {
       paused = true;
       pty.pause();
-    } else if (paused && ws.bufferedAmount < WS_LOW_WATER) {
-      paused = false;
-      pty.resume();
+      // A paused PTY emits no onData event, so it cannot resume from this
+      // callback. Observe the socket queue until it drains instead.
+      drainTimer = setInterval(checkDrain, 50);
     }
   });
   pty.onExit(() => {
+    if (drainTimer !== null) clearInterval(drainTimer);
     sendControl(ws, { type: "ended" });
     onEnd();
   });
@@ -184,6 +204,7 @@ export function wirePtyToSocket(
     }
   });
   ws.on("close", () => {
+    if (drainTimer !== null) clearInterval(drainTimer);
     try {
       pty.kill();
     } catch {
