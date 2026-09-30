@@ -158,7 +158,9 @@ export function useTerminalWs(path: string): TerminalApi {
       let expectingSeed = false;
       let expanding = false;
       let historyDepth = Math.max(10, Math.min(scrollback - 10, MAX_HISTORY_LINES));
-      let reseedFrom: { viewportY: number; length: number } | null = null;
+      let historyDepthBeforeRequest = historyDepth;
+      let messageSeedLines = 0;
+      let reseedFrom: { viewportY: number; historyLines: number } | null = null;
 
       const termTheme = readTerminalTheme();
       const term = new Terminal({
@@ -269,6 +271,7 @@ export function useTerminalWs(path: string): TerminalApi {
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         expanding = true;
+        historyDepthBeforeRequest = historyDepth;
         historyDepth = Math.min(historyDepth * 3, MAX_HISTORY_LINES);
         ws.send(JSON.stringify({ type: "history", lines: historyDepth }));
       };
@@ -694,23 +697,26 @@ export function useTerminalWs(path: string): TerminalApi {
         };
         ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
-            term.write(new Uint8Array(event.data));
             if (expectingSeed) {
               // The seed is the first binary frame after seed-start. Once
               // it is in, a re-seed restores the reading position: the
               // deeper seed pushed the user's spot down by `added` lines.
               expectingSeed = false;
               const from = reseedFrom;
+              const seedLines = messageSeedLines;
               reseedFrom = null;
-              if (from) {
+              term.write(new Uint8Array(event.data), () => {
+                if (!from) return;
                 const buf = term.buffer.active;
-                const added = buf.length - from.length;
+                const added = seedLines - from.historyLines;
                 term.scrollToLine(
                   Math.max(0, Math.min(from.viewportY + added, buf.baseY)),
                 );
                 expanding = false;
-              }
+              });
+              return;
             }
+            term.write(new Uint8Array(event.data));
             return;
           }
           try {
@@ -726,9 +732,19 @@ export function useTerminalWs(path: string): TerminalApi {
               setStatus("ended");
             } else if (message.type === "pong") {
               lastPongAt = Date.now();
+            } else if (message.type === "seed-skipped") {
+              // The server kept the live stream but omitted an expensive
+              // history seed. Preserve the current buffer and treat the next
+              // binary frame as live output.
+              seeded = true;
+              expectingSeed = false;
+              reseedFrom = null;
+              historyDepth = historyDepthBeforeRequest;
+              expanding = false;
             } else if (message.type === "seed-start") {
               const reSeeding = seeded;
               seeded = true;
+              messageSeedLines = typeof message.lines === "number" ? message.lines : 0;
               // The server reports what it actually sent. Fewer lines than
               // requested (or an explicit complete) means the pane has
               // nothing deeper — mark the ceiling reached so scroll-to-top
@@ -746,11 +762,12 @@ export function useTerminalWs(path: string): TerminalApi {
                 // push that content down by the number of added lines.
                 reseedFrom = {
                   viewportY: term.buffer.active.viewportY,
-                  length: term.buffer.active.length,
+                  historyLines: term.buffer.active.baseY,
                 };
               }
               // A zero-line seed carries no bytes — do not wait for one.
               expectingSeed = message.lines !== 0;
+              if (!expectingSeed) expanding = false;
               term.reset();
             }
           } catch {

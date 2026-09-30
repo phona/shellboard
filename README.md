@@ -85,3 +85,4 @@ pnpm check            # typecheck(tsc)+ eslint
 - 重连后终端只显示当前屏,历史在 tmux copy-mode(终端工具条的 ⇲ 按钮进入)。
 - Activity 是 tmux 输出活动的近似(Agent 静默思考会显示 idle),这是设计取舍而非 bug。
 - Windows 不支持(通过浏览器访问 Linux 上的 Shellboard)。
+- agent 长回复演播途中向上翻可能看到重绘残影;翻入历史会自动从 tmux 校准出干净 transcript,弱网下校准范围更浅。
