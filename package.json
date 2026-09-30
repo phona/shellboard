@@ -16,7 +16,7 @@
     "dev": "node scripts/dev.mjs",
     "build": "pnpm --filter @shellboard/web build",
     "check": "pnpm -r --if-present typecheck && eslint .",
-    "test": "pnpm --filter @shellboard/server test"
+    "test": "pnpm -r --if-present test"
   },
   "devDependencies": {
     "eslint": "10.11.0",
