@@ -39,6 +39,18 @@ function normalizeSeedLineEndings(seed: Uint8Array): Buffer {
   return Buffer.concat(parts);
 }
 
+/** capture-pane ends its output with a line feed, and the CRLF rewrite turns
+    that into a scroll: a screen-inclusive seed would shift the repainted
+    screen up by one row and leave the client misaligned with the pane. That
+    off-by-one is what starts the drift cascade — every later relative repaint
+    then lands one row off — so it is dropped here. */
+function dropTrailingLineFeed(seed: Buffer): Buffer {
+  let end = seed.length;
+  if (end > 0 && seed[end - 1] === 0x0a) end -= 1;
+  if (end > 0 && seed[end - 1] === 0x0d) end -= 1;
+  return end === seed.length ? seed : seed.subarray(0, end);
+}
+
 /**
  * One PTY per session (D4). A second client takes over: the old PTY is
  * killed, the old socket is closed with 4001. The tmux session itself is
@@ -145,7 +157,14 @@ export class TerminalBridge {
         // The client exhausted its local buffer: re-seed deeper. The window
         // is already at the client's size, so the width barrier is a no-op.
         seedDepth.lines = lines;
-        wire.reseed(this.seedFor(pty, session.tmuxName, Promise.resolve(), () => seedDepth.lines));
+        // Capture FIRST, hold AFTER. The seed is then a snapshot of the pane
+        // and every byte that follows it is strictly newer, so flushing the
+        // held bytes on top cannot duplicate the window the capture took.
+        // (Holding first would buffer that window and replay it after the
+        // seed — the seam artifact this ordering exists to avoid.)
+        void this.seedFor(pty, session.tmuxName, Promise.resolve(), () => seedDepth.lines, true).then(
+          (payload) => wire.reseed(Promise.resolve(payload)),
+        );
       },
       holdOutputUntil: this.seedFor(pty, session.tmuxName, firstResize, () => seedDepth.lines),
     });
@@ -178,12 +197,21 @@ export class TerminalBridge {
       init/resize and the repaint it forces) so the seed renders at the
       client's width; a socket that never resizes falls back to a timed
       capture at the spawn size. On-demand re-seeds pass an already-resolved
-      barrier — the window is already at the client's size. */
+      barrier — the window is already at the client's size.
+
+      `includeScreen` captures the visible screen as well as the history above
+      it. Only correct when the caller takes the snapshot BEFORE opening the
+      hold (see `onHistory`): the seed then stands alone as the pane's state,
+      and every byte replayed after it is strictly newer, so nothing is
+      painted twice. The connect-time seed must stay history-only — it has to
+      wait for the resize repaint, so the attach repaint that follows supplies
+      the screen, and including it would repaint that screen a second time. */
   private seedFor(
     pty: nodePty.IPty,
     tmuxName: string,
     barrier: Promise<void>,
     seedLines: () => number,
+    includeScreen = false,
   ): Promise<SeedPayload> {
     const settled = Promise.race([
       barrier.then(() => nextOutput(pty)),
@@ -213,35 +241,41 @@ export class TerminalBridge {
         // No history above the screen: `-E -1` would clamp to line 0 and
         // return the first VISIBLE line, which the attach repaint then
         // sends again — a duplicated line at the seam on every fresh
-        // session. Skip the seed instead.
+        // session. Skip the seed instead. A screen-inclusive capture is
+        // still worth taking with no history: it repaints the pane the user
+        // is looking at, which is the whole point of the re-seed.
         const historySize = probe.failed ? 0 : Number(probe.stdout.trim());
-        if (!Number.isFinite(historySize) || historySize === 0) {
+        if (!includeScreen && (!Number.isFinite(historySize) || historySize === 0)) {
           return { seed: null, lines: 0, complete: true };
         }
-        return execa(
-          "tmux",
-          [
-            "-L",
-            this.socket,
-            "capture-pane",
-            "-p",
-            "-e",
-            "-T",
-            "-S",
-            `-${requested}`,
-            "-E",
-            "-1",
-            "-t",
-            tmuxName,
-          ],
-          { encoding: "buffer", reject: false, timeout: FIRST_OUTPUT_TIMEOUT_MS },
-        ).then((r) =>
+        const capture = [
+          "-L",
+          this.socket,
+          "capture-pane",
+          "-p",
+          "-e",
+          "-T",
+          "-S",
+          `-${requested}`,
+        ];
+        // History-only for the connect-time seed: `-E -1` stops just above
+        // the visible screen so the attach repaint that follows lands
+        // seamlessly on top.
+        if (!includeScreen) capture.push("-E", "-1");
+        capture.push("-t", tmuxName);
+        return execa("tmux", capture, {
+          encoding: "buffer",
+          reject: false,
+          timeout: FIRST_OUTPUT_TIMEOUT_MS,
+        }).then((r) =>
           // execa 10 binary output is a plain Uint8Array, not a Buffer
           r.stdout instanceof Uint8Array && r.stdout.length > 0
             ? {
-                seed: normalizeSeedLineEndings(r.stdout),
+                seed: includeScreen
+                  ? dropTrailingLineFeed(normalizeSeedLineEndings(r.stdout))
+                  : normalizeSeedLineEndings(r.stdout),
                 // capture-pane returns at most `requested` lines
-                lines: Math.min(requested, historySize),
+                lines: Math.min(requested, Math.max(historySize, 0)),
                 // fewer lines than asked = the pane's history is exhausted
                 complete: historySize <= requested,
               }

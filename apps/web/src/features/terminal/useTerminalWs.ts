@@ -10,6 +10,13 @@ import { useUi } from "../../state/store";
 import { toast } from "../../state/toasts";
 import { KEYBINDINGS, matchesBinding } from "../../util/dom";
 import { wsUrl } from "../../api/client";
+import {
+  decideReconcile,
+  isSlowTransfer,
+  nextHistoryDepthAfterSeedStart,
+  RECONCILE_DEPTH,
+  RECONCILE_SETTLE_MS,
+} from "./historyReconcile";
 
 export type TerminalStatus =
   | "connecting"
@@ -159,8 +166,24 @@ export function useTerminalWs(path: string): TerminalApi {
       let expanding = false;
       let historyDepth = Math.max(10, Math.min(scrollback - 10, MAX_HISTORY_LINES));
       let historyDepthBeforeRequest = historyDepth;
-      let messageSeedLines = 0;
-      let reseedFrom: { viewportY: number; historyLines: number } | null = null;
+      let reseedFrom: { viewportY: number; baseY: number } | null = null;
+      // Scroll-triggered reconcile (D7 校准机制). Reading history can drift
+      // from the pane, so a settled scroll up in history re-pulls the pane's
+      // own history to make the stretch on screen trustworthy again.
+      // `gesturedSinceReseed` gates both this and the scroll-to-top growth to
+      // real user scrolls: a re-seed restores the reading position with
+      // scrollToLine, and mistaking that for a gesture would re-arm the very
+      // request the re-seed just satisfied.
+      let outputSinceReconcile = false;
+      let lastReconcileAt = 0;
+      let slowLink = false;
+      let seedStartedAt = 0;
+      let requestedSeedDepth = historyDepth;
+      let gesturedSinceReseed = true;
+      // Set immediately before a programmatic scrollToLine so the onScroll it
+      // fires is not read as a user gesture.
+      let programmaticScrollAt = 0;
+      let reconcileSettleTimer: number | null = null;
 
       const termTheme = readTerminalTheme();
       const term = new Terminal({
@@ -268,18 +291,69 @@ export function useTerminalWs(path: string): TerminalApi {
         if (!seeded || expanding) return;
         if (buf.viewportY > 2) return;
         if (historyDepth >= MAX_HISTORY_LINES) return;
+        // Only a real scroll may grow the buffer. The re-seed's own position
+        // restore fires onScroll, and without this gate that would ask for
+        // more history and grow the buffer in a loop.
+        if (!gesturedSinceReseed) return;
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         expanding = true;
+        gesturedSinceReseed = false;
         historyDepthBeforeRequest = historyDepth;
         historyDepth = Math.min(historyDepth * 3, MAX_HISTORY_LINES);
+        requestedSeedDepth = historyDepth;
         ws.send(JSON.stringify({ type: "history", lines: historyDepth }));
+      };
+
+      // Scroll-triggered reconcile. A redraw-heavy TUI (agent CLI) repaints
+      // each message in full and tmux forwards every repaint, so the
+      // byte-accumulated client scrollback holds every intermediate state
+      // while the pane's own history stays clean. Re-pulling the pane is what
+      // makes the stretch the user is reading match it again. Debounced on
+      // scroll-settle: a user still scrolling is reading, not refreshing, and
+      // must never have the buffer swapped underneath them.
+      const scheduleReconcile = (): void => {
+        if (reconcileSettleTimer !== null) window.clearTimeout(reconcileSettleTimer);
+        reconcileSettleTimer = window.setTimeout(() => {
+          reconcileSettleTimer = null;
+          const ws = wsRef.current;
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          const buf = term.buffer.active;
+          const decision = decideReconcile({
+            seeded,
+            expanding,
+            outputSinceReconcile,
+            gesturedSinceReseed,
+            viewportY: buf.viewportY,
+            baseY: buf.baseY,
+            lastReconcileAt,
+            now: Date.now(),
+            wsOpen: true,
+            slowLink,
+            reconcileDepth: RECONCILE_DEPTH,
+          });
+          if (!decision) return;
+          expanding = true;
+          gesturedSinceReseed = false;
+          lastReconcileAt = Date.now();
+          requestedSeedDepth = decision.depth;
+          // Rollback anchor for a seed-skipped reply: the buffer was never
+          // cleared, so the held depth must not be rewritten by a request the
+          // server declined to serve.
+          historyDepthBeforeRequest = historyDepth;
+          ws.send(JSON.stringify({ type: "history", lines: decision.depth }));
+        }, RECONCILE_SETTLE_MS);
       };
 
       term.onScroll(() => {
         if (term.buffer.active.type === "alternate") return;
+        // A scroll we caused ourselves — the re-seed's position restore — is
+        // not a gesture, and must not re-arm the growth or reconcile paths
+        // that the re-seed just satisfied.
+        if (Date.now() - programmaticScrollAt > 300) gesturedSinceReseed = true;
         syncAtBottom();
         maybeExpandHistory();
+        scheduleReconcile();
       });
       term.onSelectionChange(() => {
         setHasSelection(term.hasSelection());
@@ -688,6 +762,9 @@ export function useTerminalWs(path: string): TerminalApi {
           doFit();
           // scrollback tells the server how deep the connect-time history
           // seed should reach (D7) — it must match this terminal's buffer.
+          // Remembered so the seed-start payload can be judged against what
+          // was actually asked for.
+          requestedSeedDepth = historyDepth;
           ws.send(
             JSON.stringify({ type: "init", cols: term.cols, rows: term.rows, scrollback }),
           );
@@ -698,24 +775,36 @@ export function useTerminalWs(path: string): TerminalApi {
         ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
             if (expectingSeed) {
-              // The seed is the first binary frame after seed-start. Once
-              // it is in, a re-seed restores the reading position: the
-              // deeper seed pushed the user's spot down by `added` lines.
+              // The seed is the first binary frame after seed-start. The
+              // reading position is restored by *distance from the live
+              // bottom*, not by how many lines the server claims to have
+              // sent: a shallow reconcile delivers fewer lines than the
+              // buffer it replaces, and line-count math would then anchor the
+              // user to the top of a short buffer. baseY moves with the seed
+              // depth; the offset the user chose does not.
               expectingSeed = false;
               const from = reseedFrom;
-              const seedLines = messageSeedLines;
               reseedFrom = null;
+              // The buffer now matches the pane, so nothing is stale. A slow
+              // transfer sticks for the session — flapping it would make the
+              // reconcile cadence unpredictable.
+              if (isSlowTransfer(seedStartedAt, Date.now())) slowLink = true;
+              outputSinceReconcile = false;
               term.write(new Uint8Array(event.data), () => {
+                expanding = false;
                 if (!from) return;
                 const buf = term.buffer.active;
-                const added = seedLines - from.historyLines;
+                const offsetFromBottom = from.baseY - from.viewportY;
+                programmaticScrollAt = Date.now();
                 term.scrollToLine(
-                  Math.max(0, Math.min(from.viewportY + added, buf.baseY)),
+                  Math.max(0, Math.min(buf.baseY - offsetFromBottom, buf.baseY)),
                 );
-                expanding = false;
               });
               return;
             }
+            // Live bytes. New output is the only thing that makes held
+            // history stale, so this is what arms a reconcile.
+            outputSinceReconcile = true;
             term.write(new Uint8Array(event.data));
             return;
           }
@@ -741,28 +830,33 @@ export function useTerminalWs(path: string): TerminalApi {
               reseedFrom = null;
               historyDepth = historyDepthBeforeRequest;
               expanding = false;
+              // Nothing was re-seeded, so the buffer is exactly as stale as
+              // it was and the user's scroll still counts as an unanswered
+              // request — both paths stay armed.
+              gesturedSinceReseed = true;
             } else if (message.type === "seed-start") {
               const reSeeding = seeded;
               seeded = true;
-              messageSeedLines = typeof message.lines === "number" ? message.lines : 0;
+              seedStartedAt = Date.now();
               // The server reports what it actually sent. Fewer lines than
-              // requested (or an explicit complete) means the pane has
+              // *requested* (or an explicit complete) means the pane has
               // nothing deeper — mark the ceiling reached so scroll-to-top
-              // stops asking.
-              if (
-                message.complete === true ||
-                (typeof message.lines === "number" &&
-                  message.lines > 0 &&
-                  message.lines < historyDepth)
-              ) {
-                historyDepth = MAX_HISTORY_LINES;
-              }
+              // stops asking. Comparing against the requested depth is what
+              // keeps a shallow reconcile from reading as "exhausted" and
+              // killing the scroll-to-top growth.
+              historyDepth = nextHistoryDepthAfterSeedStart(
+                message.lines,
+                message.complete,
+                requestedSeedDepth,
+                historyDepth,
+              );
               if (reSeeding) {
-                // Remember where the user was reading; the deeper seed will
-                // push that content down by the number of added lines.
+                // Remember where the user was reading, as an offset from the
+                // live bottom. The seed replaces the buffer, so only that
+                // offset survives — see the restore above.
                 reseedFrom = {
                   viewportY: term.buffer.active.viewportY,
-                  historyLines: term.buffer.active.baseY,
+                  baseY: term.buffer.active.baseY,
                 };
               }
               // A zero-line seed carries no bytes — do not wait for one.
@@ -780,6 +874,10 @@ export function useTerminalWs(path: string): TerminalApi {
           // (terminal rebuild, retry); nulling the ref then would
           // silently kill every input path on a healthy connection.
           if (wsRef.current === ws) wsRef.current = null;
+          if (reconcileSettleTimer !== null) {
+            window.clearTimeout(reconcileSettleTimer);
+            reconcileSettleTimer = null;
+          }
           if (disposed || remoteEnded || event.code === 4001) return;
           setStatus("reconnecting");
           attempt += 1;
@@ -815,6 +913,7 @@ export function useTerminalWs(path: string): TerminalApi {
         disposed = true;
         stopFling();
         if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+        if (reconcileSettleTimer !== null) window.clearTimeout(reconcileSettleTimer);
         container.removeEventListener("contextmenu", contextMenu, true);
         container.removeEventListener("touchstart", onTouchStart);
         container.removeEventListener("touchmove", onTouchMove);

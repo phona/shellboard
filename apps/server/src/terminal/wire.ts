@@ -112,40 +112,53 @@ export function wirePtyToSocket(
   let hold = false;
   let held: Buffer[] = [];
   let heldBytes = 0;
-  const startHold = (payload: Promise<SeedPayload>): void => {
+  let paused = false;
+
+  /** Open the hold: live bytes accumulate instead of reaching the client. */
+  const openHold = (): void => {
+    held = [];
     heldBytes = 0;
     hold = true;
-    void payload.then(({ seed, lines, complete }) => {
-      hold = false;
-      if (ws.readyState !== WebSocket.OPEN) {
-        held = [];
-        heldBytes = 0;
-        return;
-      }
-      // The seed replaces whatever the client had: every attach (including
-      // a reconnect) re-seeds from tmux, and appending it to a surviving
-      // buffer would duplicate the whole transcript. The client clears its
-      // buffer on this frame; the seed bytes then repaint the history.
-      const sendSeed = heldBytes <= HELD_MAX_BYTES;
-      if (sendSeed) {
-        sendControl(ws, { type: "seed-start", lines, complete });
-      } else {
-        // The existing client buffer remains valid. Tell it not to reset or
-        // mistake the first held live frame for the omitted seed.
-        sendControl(ws, { type: "seed-skipped" });
-      }
-      if (sendSeed && seed !== null && seed.length > 0) {
-        ws.send(seed, { binary: true });
-      }
-      for (const chunk of held) {
-        ws.send(chunk, { binary: true });
-      }
-      held = [];
-      heldBytes = 0;
-    });
+  };
+
+  /** Close the hold. The seed goes first — the client clears its buffer on
+      seed-start, so the seed must arrive before anything that follows it —
+      then everything that accumulated while the hold was open, in wire order.
+      A hold that grew past HELD_MAX_BYTES sacrifices the seed instead: the
+      live stream must stay intact, and the seed must not cost unbounded
+      memory on a firehose pane. */
+  const closeHold = (payload: SeedPayload): void => {
+    hold = false;
+    const buffered = held;
+    const bufferedBytes = heldBytes;
+    held = [];
+    heldBytes = 0;
+    if (ws.readyState !== WebSocket.OPEN) return;
+    const sendSeed = bufferedBytes <= HELD_MAX_BYTES;
+    if (sendSeed) {
+      sendControl(ws, { type: "seed-start", lines: payload.lines, complete: payload.complete });
+    } else {
+      // The existing client buffer remains valid. Tell it not to reset or
+      // mistake the first held live frame for the omitted seed.
+      sendControl(ws, { type: "seed-skipped" });
+    }
+    if (sendSeed && payload.seed !== null && payload.seed.length > 0) {
+      ws.send(payload.seed, { binary: true });
+    }
+    for (const chunk of buffered) {
+      ws.send(chunk, { binary: true });
+    }
+  };
+
+  const startHold = (payload: Promise<SeedPayload>): void => {
+    openHold();
+    void payload.then(closeHold, () =>
+      // A failed capture must not leave the hold open forever — that would
+      // silently stop all output to this client.
+      closeHold({ seed: null, lines: 0, complete: true }),
+    );
   };
   if (options.holdOutputUntil) startHold(options.holdOutputUntil);
-  let paused = false;
   let drainTimer: ReturnType<typeof setInterval> | null = null;
   const checkDrain = (): void => {
     if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > WS_LOW_WATER) return;
@@ -217,6 +230,17 @@ export function wirePtyToSocket(
     // Re-hold the stream and re-seed at a deeper depth. The live stream
     // keeps buffering while the capture runs, then resumes after the seed —
     // the same machinery as the connect-time hold, re-armed on demand.
+    //
+    // Ordering is the whole point: the caller must have finished the capture
+    // BEFORE calling this. Holding first and capturing after would buffer a
+    // window of live output that the snapshot already contains, and flushing
+    // it after the seed replays that window on top — duplicating the stretch
+    // of history it produced. On a streaming pane that lands exactly where
+    // stable history meets the message being repainted, which reads as
+    // duplicated and misaligned rows at the seam. Pausing the PTY does not
+    // help either: it stops node-pty reading the pty, not the pane being
+    // written, so the snapshot ends up newer than the bytes being held and
+    // the overlap grows.
     reseed: (payload: Promise<SeedPayload>): void => startHold(payload),
   };
 }

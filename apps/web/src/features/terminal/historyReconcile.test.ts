@@ -4,34 +4,67 @@ import {
   isSlowTransfer,
   MAX_HISTORY_LINES,
   nextHistoryDepthAfterSeedStart,
+  RECONCILE_DEPTH,
+  RECONCILE_MIN_INTERVAL_MS,
+  SLOW_LINK_RECONCILE_INTERVAL_MS,
   type ReconcileInput,
 } from "./historyReconcile";
 
 // Reader up in history: 100 lines above the live bottom, seeded, output
-// arrived, cooldown long past, socket open.
+// arrived, the user scrolled since the last re-seed, cooldown long past,
+// socket open.
 function input(overrides: Partial<ReconcileInput> = {}): ReconcileInput {
   return {
     seeded: true,
     expanding: false,
     outputSinceReconcile: true,
+    gesturedSinceReseed: true,
     viewportY: 100,
     baseY: 200,
     lastReconcileAt: 0,
     now: 10_000,
     wsOpen: true,
     slowLink: false,
-    historyDepth: 4990,
+    reconcileDepth: RECONCILE_DEPTH,
     ...overrides,
   };
 }
 
 describe("decideReconcile (scroll-triggered re-pull)", () => {
-  it("re-pulls at the held depth when up in history with new output", () => {
-    expect(decideReconcile(input())).toEqual({ depth: 4990 });
+  it("re-pulls at the shallow depth when up in history with new output", () => {
+    expect(decideReconcile(input())).toEqual({ depth: RECONCILE_DEPTH });
   });
 
-  it("drops to the shallow depth once the link proved slow", () => {
-    expect(decideReconcile(input({ slowLink: true }))).toEqual({ depth: 1000 });
+  it("stays shallow even on a fast link — the depth is not link-dependent", () => {
+    // Regression: the depth used to follow slowLink, which made the fast path
+    // re-pull the whole held depth and clear a large buffer to fix a few
+    // lines on screen.
+    expect(decideReconcile(input({ slowLink: false }))).toEqual({
+      depth: RECONCILE_DEPTH,
+    });
+  });
+
+  it("backs off to the longer cooldown once the link proved slow", () => {
+    // Past the fast cooldown but inside the slow one: a fast link fires here,
+    // a slow link stays quiet so a weak connection is not spent re-rendering
+    // history the user is still reading.
+    const pastFastCooldown = {
+      lastReconcileAt: 10_000 - RECONCILE_MIN_INTERVAL_MS - 1,
+      now: 10_000,
+    };
+    expect(decideReconcile(input(pastFastCooldown))).toEqual({ depth: RECONCILE_DEPTH });
+    expect(decideReconcile(input({ slowLink: true, ...pastFastCooldown }))).toBeNull();
+
+    // Exactly at the slow cooldown it fires again.
+    expect(
+      decideReconcile(
+        input({
+          slowLink: true,
+          lastReconcileAt: 10_000 - SLOW_LINK_RECONCILE_INTERVAL_MS,
+          now: 10_000,
+        }),
+      ),
+    ).toEqual({ depth: RECONCILE_DEPTH });
   });
 
   it("never fires before the connect-time seed has landed", () => {
@@ -46,6 +79,13 @@ describe("decideReconcile (scroll-triggered re-pull)", () => {
     expect(decideReconcile(input({ outputSinceReconcile: false }))).toBeNull();
   });
 
+  it("fires once per scroll-stop, not once per cooldown", () => {
+    // Regression: without this guard a streaming pane re-armed the reconcile
+    // forever — the re-seed leaves stale content again as soon as the next
+    // repaint lands, so the buffer strobed once per cooldown.
+    expect(decideReconcile(input({ gesturedSinceReseed: false }))).toBeNull();
+  });
+
   it("never fires at the live bottom", () => {
     expect(decideReconcile(input({ viewportY: 200 }))).toBeNull();
   });
@@ -55,7 +95,9 @@ describe("decideReconcile (scroll-triggered re-pull)", () => {
   });
 
   it("stays quiet inside the cooldown", () => {
-    expect(decideReconcile(input({ lastReconcileAt: 5001, now: 10_000 }))).toBeNull();
+    expect(
+      decideReconcile(input({ lastReconcileAt: 10_000 - RECONCILE_MIN_INTERVAL_MS + 1, now: 10_000 })),
+    ).toBeNull();
   });
 
   it("stays quiet with the socket down", () => {
@@ -63,13 +105,13 @@ describe("decideReconcile (scroll-triggered re-pull)", () => {
   });
 
   it("fires exactly at the off-bottom threshold", () => {
-    expect(decideReconcile(input({ viewportY: 192 }))).toEqual({ depth: 4990 });
+    expect(decideReconcile(input({ viewportY: 192 }))).toEqual({ depth: RECONCILE_DEPTH });
   });
 
   it("fires exactly when the cooldown has elapsed", () => {
-    expect(decideReconcile(input({ lastReconcileAt: 5000, now: 10_000 }))).toEqual({
-      depth: 4990,
-    });
+    expect(
+      decideReconcile(input({ lastReconcileAt: 10_000 - RECONCILE_MIN_INTERVAL_MS, now: 10_000 })),
+    ).toEqual({ depth: RECONCILE_DEPTH });
   });
 });
 
@@ -94,12 +136,12 @@ describe("nextHistoryDepthAfterSeedStart (seed-start payload)", () => {
     expect(nextHistoryDepthAfterSeedStart(0, false, 1000, 4990)).toBe(4990);
   });
 
-  it("does not read a shallow slow-link reconcile as exhausted", () => {
-    // Regression: a slow-link reconcile asks for 1000 lines and gets exactly
-    // 1000 back — the pane is not exhausted, the request was. Comparing
+  it("does not read a shallow reconcile as exhausted", () => {
+    // Regression: a reconcile asks for RECONCILE_DEPTH lines and gets exactly
+    // that many back — the pane is not exhausted, the request was. Comparing
     // against the requested depth (not the held one) keeps the scroll-to-top
     // growth alive.
-    expect(nextHistoryDepthAfterSeedStart(1000, false, 1000, 4990)).toBe(4990);
+    expect(nextHistoryDepthAfterSeedStart(RECONCILE_DEPTH, false, RECONCILE_DEPTH, 4990)).toBe(4990);
   });
 });
 

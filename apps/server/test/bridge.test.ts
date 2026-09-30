@@ -273,6 +273,70 @@ it("expands history on demand when the client scrolls to the top (D7)", async ()
   await services.sessions.kill(session.id);
 });
 
+it("does not replay the capture window on top of the snapshot re-seed", async () => {
+  const { services, session } = await createBashSession();
+
+  const ws = new FakeWS();
+  attach(services, ws, session);
+  await waitFor(() => ws.output().length > 0);
+
+  // A pane streaming while the client is up in history: the exact case where
+  // a re-seed used to duplicate rows.
+  ws.emitMessage("i=0; while [ $i -lt 100000 ]; do echo stream-$i; i=$((i+1)); done\r", true);
+  await waitFor(() => ws.output().includes("stream-300"));
+
+  // Ask for a re-seed while the pane is still producing.
+  ws.emitMessage(JSON.stringify({ type: "history", lines: 500 }));
+  await waitFor(() => ws.text.filter((t) => t.includes("seed-start")).length === 2);
+
+  // The seed is a snapshot of the pane at the moment capture-pane read it.
+  // Everything the server sends after it must be strictly newer — otherwise
+  // the capture window is being replayed on top of a snapshot that already
+  // contains it, and the client ends up with that stretch of history twice.
+  const seedStarts = ws.frames.filter(
+    (frame) => !frame.binary && frame.data.toString("utf8").includes("seed-start"),
+  );
+  const lastSeedStart = ws.frames.lastIndexOf(seedStarts[seedStarts.length - 1]!);
+  const seedFrame = ws.frames.slice(lastSeedStart + 1).find((frame) => frame.binary);
+  expect(seedFrame).toBeDefined();
+
+  const numbers = (text: string): number[] =>
+    [...text.matchAll(/stream-(\d+)/g)].map((m) => Number(m[1]));
+  const inSeed = numbers(seedFrame!.data.toString("utf8"));
+  expect(inSeed.length).toBeGreaterThan(0);
+  const seedMax = Math.max(...inSeed);
+
+  // The producer must still be running, or there is nothing to compare.
+  await waitFor(() =>
+    ws.frames
+      .slice(ws.frames.indexOf(seedFrame!) + 1)
+      .some((frame) => frame.binary && numbers(frame.data.toString("utf8")).some((n) => n > seedMax)),
+  );
+
+  const afterSeed = ws.frames
+    .slice(ws.frames.indexOf(seedFrame!) + 1)
+    .filter((frame) => frame.binary)
+    .map((frame) => frame.data.toString("utf8"))
+    .join("");
+  const after = numbers(afterSeed);
+  expect(after.length).toBeGreaterThan(0);
+  // THE property: nothing the snapshot already contains may be re-sent. That
+  // is the duplication that shows up as repeated and misaligned rows where
+  // stable history meets the message being repainted.
+  const inSeedSet = new Set(inSeed);
+  expect(after.filter((n) => inSeedSet.has(n))).toEqual([]);
+  expect(Math.min(...after)).toBeGreaterThan(seedMax);
+  // The other side of the same coin: the capture window is excluded from the
+  // replay, not dropped. How much is lost is the capture's own duration times
+  // the pane's scroll rate — for a repaint-heavy TUI that is ~0 lines, for the
+  // tight echo loop here it is tens. Bounded by the requested depth, which is
+  // the most one capture could ever cover.
+  expect(Math.min(...after) - seedMax).toBeLessThanOrEqual(500);
+
+  ws.close();
+  await services.sessions.kill(session.id);
+}, 30_000);
+
 it("delivers arrow keys to alternate-screen apps as ordinary input", async () => {
   const { services, dir, session } = await createBashSession();
   const ws = new FakeWS();
