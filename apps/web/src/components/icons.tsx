@@ -41,6 +41,15 @@ export function IconPaste() {
   );
 }
 
+export function IconNewLine() {
+  return (
+    <svg {...base()}>
+      <path d="M20 4v7a4 4 0 0 1-4 4H4" />
+      <path d="m9 10-5 5 5 5" />
+    </svg>
+  );
+}
+
 export function IconHistory() {
   return (
     <svg {...base()}>

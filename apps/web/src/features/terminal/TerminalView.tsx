@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { SessionWithRuntime } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
-import { IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconPaste, IconSearch } from "../../components/icons";
+import { IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconNewLine, IconPaste, IconSearch } from "../../components/icons";
 import { Modal } from "../../components/Modal";
 import { toast } from "../../state/toasts";
 import { useUi } from "../../state/store";
@@ -340,10 +340,16 @@ export function TerminalView({
       {/* AoE-style accessory key row: soft keyboards have no Esc/Ctrl/arrows,
           which makes a shell unusable without it. Bytes go through the same
           WS path as typed input; mousedown preventDefault keeps the soft
-          keyboard open. Copying: long-press drag selects, the ^C key flips
-          into copy while a selection exists (same smart Ctrl+C as desktop). */}
+          keyboard open. Each key acts once on click; holding a key does not
+          repeat it. Copying: long-press drag in the terminal selects, and the
+          ^C key flips into copy while a selection exists. */}
       {isMobile && terminal.status === "connected" && !exited && (
-        <div className="term-keys" role="group" aria-label="Terminal keys">
+        <div
+          className="term-keys"
+          role="group"
+          aria-label="Terminal keys"
+          onContextMenu={(event) => event.preventDefault()}
+        >
           <button
             type="button"
             aria-label="Up arrow"
@@ -367,6 +373,20 @@ export function TerminalView({
           >
             Tab
           </button>
+          {variant === "agent" && session.agentType !== "shell" && (
+            <button
+              type="button"
+              aria-label="New line (Ctrl+J)"
+              title="New line (Ctrl+J)"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                terminal.setCtrlArmed(false);
+                terminal.sendText("\n");
+              }}
+            >
+              <IconNewLine />
+            </button>
+          )}
           <button
             type="button"
             onMouseDown={(event) => event.preventDefault()}
