@@ -269,3 +269,51 @@ pnpm --filter @shellboard/server test:coverage
 > 这次的顺序:症状 → 读源码得假设 → 修 → 写测试 → 通过(什么都没证明)→ 关守卫验证 → 才发现第一版测试是空的。
 
 写测试的成本远低于带着一个"看起来修好了"的缺陷继续往下走十轮的成本。
+
+---
+
+## 9. 附录:七个被否决的机制,及最小复现
+
+每个都只需要 `@xterm/headless`(临时装)+ 一个独占 tmux socket。原脚本属一次性产物、已删除;下面是复现所需的全部信息。
+
+**共同结论:探针类 bug 在 node 里可复现,渲染器/字体类不可。** 前七个全是前者,所以能一个个排除;最后剩下的两个只在浏览器里,只能靠 A/B 开关。
+
+### 9.1 `splitSeedCapture` 的 UTF-8 解码
+
+主张:为拆出 probe 行而 `toString("utf8")` 再编回,会把非法字节变成 U+FFFD。
+
+```js
+const raw = await tmux("capture-pane","-p","-e","-T","-S","-40","-t",p,";","display-message","-p","-t",p,"-F","#{history_size}");
+const round = Buffer.from(Buffer.from(raw).toString("utf8"), "utf8");
+// 逐字节比较
+```
+
+含 latin-1 高字节、孤立续字节、截断的三字节序列、CJK、emoji、ZWJ。结果 1532 → 1532,首差异 −1。**tmux 在写入 cell grid 时已规范化,`capture-pane` 输出永远合法 UTF-8。**
+
+### 9.2 UTF-8 序列被 `reset()` 打断
+
+把 `中文测试abc` 从第 1 字节切开,`write(head)` → `reset()` → `write(tail)`。结果渲染正确——**xterm 的 UTF-8 解码器状态不被 `reset()` 清除,序列自己补上。**
+
+### 9.3 种子列宽与客户端不一致
+
+pane 80 列的种子写进 cols 为 80/60/52/40 的终端。四组都只是换行,无乱码。
+
+### 9.4 转义序列被 `reset()` 打断
+
+`write("prefix \x1b[3")` → `reset()` → `write(seed)`。种子完整——**`reset()` 把 CSI 解析器状态也清了。**(9.2–9.4 合起来说明 `reset()` 比预期干净得多。)
+
+### 9.5/9.6 `resize()` 重排破坏宽字符
+
+短行与长行(120 列、每行 12 组 CJK)各测一遍,`resize(100/80/60/40/120)` 后按字符比对。**两组都是零丢失**——重排只移动空白。注意第一版用了短行,根本没触发重排,是白测;重排只在行宽超过新列数时才发生。
+
+### 9.7 `reset()` 丢掉注册的 parser handler
+
+`registerCsiHandler` / `registerOscHandler` 各记一次计数,`reset()` 后再发同样序列。计数照增,**handler 存活,1049 剥离仍然生效。**
+
+### 9.8 `capture-pane` 始终返回一致的 pane 状态
+
+这是唯一**确认了机制**的实验:所谓"画一半"从不是撕裂读,而是那个瞬间 pane 真的半写。所以修法不是"把种子拼完整",而是"别在半写的时候拍快照"——即 §3.4 的静默窗口。
+
+### 9.9 xterm 的 scrollback 对转义序列只读
+
+`scrollToLine(5)` 后 `viewportY=5`、`\x1b[H` 后 `cursorY=0`,写入却落在第 15 行(`baseY` 处的 live 屏)。三次尝试均如此,其中两次清空了别的行。`@xterm/xterm` 6.0 的 typings 里 `loadCell`/`setCell` 零命中。**这是 §5.1 硬边界的实验依据。**
