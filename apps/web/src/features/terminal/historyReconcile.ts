@@ -44,9 +44,11 @@ export const RECONCILE_MAX_DEPTH = 800;
 export const RECONCILE_SETTLE_MS = 400;
 
 /** Backstop cooldown between automatic reconciles. The gesture requirement
-    bounds this to one per scroll-stop; the cooldown only stops a
-    stop-scroll-stop cycle from strobing the buffer. */
-export const RECONCILE_MIN_INTERVAL_MS = 5000;
+    bounds this to one per scroll-stop, but a touch reader adjusts in small
+    frequent steps, so without a real cooldown every adjustment after the
+    gesture gate re-opens is another full buffer clear — perceived as the
+    terminal flickering several times before it settles. */
+export const RECONCILE_MIN_INTERVAL_MS = 12_000;
 
 /** A re-push slower than this marks the link slow: reconciles then back
     off to a longer cooldown, so a weak connection is not spent re-rendering
@@ -185,6 +187,15 @@ export function nextHistoryDepthAfterSeedStart(
     threshold. */
 export function isSlowTransfer(seedStartedAt: number, now: number): boolean {
   return now - seedStartedAt > SLOW_LINK_MS;
+}
+
+/** Depth that covers a reader this far above the live bottom, for the retry
+    after a restore clamped. The scroll-to-top ladder multiplies by three,
+    which suits a reader asking deliberately for more — but a retry is the
+    client answering a request it just failed, so it asks for exactly what it
+    needs in one round instead of clearing the buffer two or three times. */
+export function coveringDepth(offsetFromBottom: number, rows: number): number {
+  return Math.min(MAX_HISTORY_LINES, offsetFromBottom + rows + RECONCILE_CONTEXT_LINES);
 }
 
 /** Where the viewport should land after a re-seed replaces the buffer.

@@ -11,6 +11,7 @@ import { toast } from "../../state/toasts";
 import { KEYBINDINGS, matchesBinding } from "../../util/dom";
 import { wsUrl } from "../../api/client";
 import {
+  coveringDepth,
   decideReconcile,
   isSlowTransfer,
   nextHistoryDepthAfterSeedStart,
@@ -290,23 +291,29 @@ export function useTerminalWs(path: string): TerminalApi {
       // (tmux retains up to MAX_HISTORY_LINES) instead of losing it: the
       // seed-start payload reports how much actually arrived and whether
       // the pane has nothing deeper, which stops further requests.
-      const maybeExpandHistory = (): void => {
+      /** `depth` lets a caller ask for exactly what it needs. The scroll-to-top
+          path leaves it out and takes the x3 ladder; a retry passes the depth
+          that covers the reader, so it settles in one round instead of
+          clearing the buffer three times. */
+      const maybeExpandHistory = (depth?: number): void => {
         const buf = term.buffer.active;
         if (!seeded || expanding) return;
-        if (buf.viewportY > 2) return;
+        if (depth === undefined && buf.viewportY > 2) return;
         if (historyDepth >= MAX_HISTORY_LINES) return;
         // Only a real scroll may grow the buffer. The re-seed's own position
         // restore fires onScroll, and without this gate that would ask for
         // more history and grow the buffer in a loop.
         if (!gesturedSinceReseed) return;
+        const requested = depth ?? Math.min(historyDepth * 3, MAX_HISTORY_LINES);
+        if (requested <= historyDepth) return;
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         expanding = true;
         gesturedSinceReseed = false;
         historyDepthBeforeRequest = historyDepth;
-        historyDepth = Math.min(historyDepth * 3, MAX_HISTORY_LINES);
-        requestedSeedDepth = historyDepth;
-        ws.send(JSON.stringify({ type: "history", lines: historyDepth }));
+        historyDepth = requested;
+        requestedSeedDepth = requested;
+        ws.send(JSON.stringify({ type: "history", lines: requested }));
       };
 
       // Scroll-triggered reconcile. A redraw-heavy TUI (agent CLI) repaints
@@ -791,13 +798,6 @@ export function useTerminalWs(path: string): TerminalApi {
         ws.onmessage = (event) => {
           if (event.data instanceof ArrayBuffer) {
             if (expectingSeed) {
-              // The seed is the first binary frame after seed-start. The
-              // reading position is restored by *distance from the live
-              // bottom*, not by how many lines the server claims to have
-              // sent: a shallow reconcile delivers fewer lines than the
-              // buffer it replaces, and line-count math would then anchor the
-              // user to the top of a short buffer. baseY moves with the seed
-              // depth; the offset the user chose does not.
               expectingSeed = false;
               const from = reseedFrom;
               reseedFrom = null;
@@ -821,8 +821,11 @@ export function useTerminalWs(path: string): TerminalApi {
                   // contain what they were reading, and scrolling further
                   // cannot move the viewport — so onScroll will never fire and
                   // the growth path would never be asked. Ask now, or the
-                  // terminal is simply stuck there.
-                  maybeExpandHistory();
+                  // terminal is simply stuck there. Ask for exactly what
+                  // covers them: the x3 ladder would take two or three rounds,
+                  // and each round clears the whole buffer — the "flickers
+                  // several times before it settles" report.
+                  maybeExpandHistory(coveringDepth(from.baseY - from.viewportY, term.rows));
                 }
                 programmaticScrollAt = Date.now();
                 term.scrollToLine(restoredViewportY(from, buf.baseY));

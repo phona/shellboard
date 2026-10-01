@@ -5,11 +5,12 @@ import type { Session } from "@shellboard/contracts";
 import { processEnv } from "../env.js";
 import type { ActivityTracker } from "../activity/tracker.js";
 import type { TmuxService } from "../tmux/tmux.js";
-import { sendControl, wirePtyToSocket } from "./wire.js";
 import {
   clampSeedLines,
   DEFAULT_SEED_LINES,
+  sendControl,
   type SeedPayload,
+  wirePtyToSocket,
 } from "./wire.js";
 
 interface AttachedClient {
@@ -153,7 +154,7 @@ export class TerminalBridge {
           seedDepth.lines = clampSeedLines(message.scrollback - 10, DEFAULT_SEED_LINES);
         }
       },
-      onHistory: (lines) => {
+      onHistory: (lines: number) => {
         // The client exhausted its local buffer: re-seed deeper. The window
         // is already at the client's size, so the width barrier is a no-op.
         seedDepth.lines = lines;
@@ -213,10 +214,17 @@ export class TerminalBridge {
     seedLines: () => number,
     includeScreen = false,
   ): Promise<SeedPayload> {
-    const settled = Promise.race([
-      barrier.then(() => nextOutput(pty)),
-      delay(FIRST_OUTPUT_TIMEOUT_MS),
-    ]);
+    // The connect-time seed has to wait for the resize repaint: the width
+    // barrier opens on the client's first init/resize, and the repaint that
+    // follows is what renders the pane at the client's width.
+    //
+    // An on-demand re-seed must NOT wait for output. The window is already at
+    // the client's size (web-first sizing), so the wait buys nothing — and on
+    // a quiet pane it costs the full FIRST_OUTPUT_TIMEOUT_MS, which is most of
+    // what the reader waits before the repair lands.
+    const settled = includeScreen
+      ? Promise.resolve()
+      : Promise.race([barrier.then(() => nextOutput(pty)), delay(FIRST_OUTPUT_TIMEOUT_MS)]);
     return settled
       .then(() =>
         execa(

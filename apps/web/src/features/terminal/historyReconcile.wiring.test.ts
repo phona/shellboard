@@ -53,7 +53,11 @@ describe("historyReconcile is wired into the terminal hook", () => {
 
   it("grows the buffer when a re-seed clamped the reader's position", () => {
     // Regression: a reconcile that did not reach the reader left them at the
-    // top of a short buffer with no way to ask for more.
-    expect(hookSource).toMatch(/restoreCoveredReader\(from, buf\.baseY\)\)\s*\{[\s\S]*maybeExpandHistory\(\)/);
+    // top of a short buffer with no way to ask for more. It asks for the depth
+    // that covers them, not the x3 ladder — each ladder round is another full
+    // buffer clear, which is the "flickers several times" report.
+    expect(hookSource).toMatch(
+      /restoreCoveredReader\(from, buf\.baseY\)\)\s*\{[\s\S]*maybeExpandHistory\(coveringDepth\(/,
+    );
   });
 });

@@ -28,7 +28,7 @@ function input(overrides: Partial<ReconcileInput> = {}): ReconcileInput {
     offsetFromBottom: 600,
     rows: 24,
     lastReconcileAt: 0,
-    now: 10_000,
+    now: 40_000,
     wsOpen: true,
     slowLink: false,
     ...overrides,
@@ -65,8 +65,8 @@ describe("decideReconcile (scroll-triggered re-pull)", () => {
     // a slow link stays quiet so a weak connection is not spent re-rendering
     // history the user is still reading.
     const pastFastCooldown = {
-      lastReconcileAt: 10_000 - RECONCILE_MIN_INTERVAL_MS - 1,
-      now: 10_000,
+      lastReconcileAt: 40_000 - RECONCILE_MIN_INTERVAL_MS - 1,
+      now: 40_000,
     };
     expect(decideReconcile(input(pastFastCooldown))).toEqual({ depth: 664 });
     expect(decideReconcile(input({ slowLink: true, ...pastFastCooldown }))).toBeNull();
@@ -76,8 +76,8 @@ describe("decideReconcile (scroll-triggered re-pull)", () => {
       decideReconcile(
         input({
           slowLink: true,
-          lastReconcileAt: 10_000 - SLOW_LINK_RECONCILE_INTERVAL_MS,
-          now: 10_000,
+          lastReconcileAt: 40_000 - SLOW_LINK_RECONCILE_INTERVAL_MS,
+          now: 40_000,
         }),
       ),
     ).toEqual({ depth: 664 });
