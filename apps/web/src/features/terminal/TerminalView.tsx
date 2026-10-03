@@ -1,11 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SessionWithRuntime } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
-import { IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconNewLine, IconPaste, IconSearch } from "../../components/icons";
+import { IconAttach, IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconNewLine, IconPaste, IconSearch } from "../../components/icons";
 import { Modal } from "../../components/Modal";
 import { toast } from "../../state/toasts";
 import { useUi } from "../../state/store";
+import { useUploads } from "../../state/uploads";
 import { useMediaQuery } from "../../util/useMediaQuery";
 import type { TerminalStatus } from "./useTerminalWs";
 import { useTerminalWs } from "./useTerminalWs";
@@ -34,6 +35,7 @@ export function TerminalView({
   // Keep in sync with the @media (max-width: 760px) blocks in theme.css.
   const isMobile = useMediaQuery("(max-width: 760px)");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const exited = variant === "agent" && runtime.activity === "exited";
 
@@ -72,6 +74,17 @@ export function TerminalView({
     setMenu((current) => (current ? null : next));
   };
 
+  const uploadAttachment = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    useUploads.getState().start({
+      sessionId: session.id,
+      files: Array.from(files),
+      onSettled: () => {
+        void queryClient.invalidateQueries({ queryKey: ["uploads", session.id] });
+      },
+    });
+  };
+
   const restart = async () => {
     try {
       await api.sessions.restart(session.id);
@@ -99,19 +112,30 @@ export function TerminalView({
         </div>
         <div className="terminal-actions">
           {isMobile ? (
-            // AoE-style mobile chrome: one overflow entry instead of seven
-            // unlabeled icon targets; every action is a labeled menu item.
-            <button
-              type="button"
-              className="icon-btn"
-              title="Terminal actions"
-              aria-label="Terminal actions"
-              aria-haspopup="menu"
-              data-ctx-opener=""
-              onClick={(event) => openMenu(event.currentTarget)}
-            >
-              ⋯
-            </button>
+            <>
+              {variant === "agent" && (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Upload attachment"
+                  aria-label="Upload attachment"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <IconAttach />
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-btn"
+                title="Terminal actions"
+                aria-label="Terminal actions"
+                aria-haspopup="menu"
+                data-ctx-opener=""
+                onClick={(event) => openMenu(event.currentTarget)}
+              >
+                ⋯
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -183,6 +207,19 @@ export function TerminalView({
           )}
         </div>
       </div>
+
+      {isMobile && variant === "agent" && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={(event) => {
+            uploadAttachment(event.target.files);
+            event.target.value = "";
+          }}
+        />
+      )}
 
       {terminal.searchOpen && (
         <div className="terminal-search">

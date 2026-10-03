@@ -1663,7 +1663,12 @@ body:has(.live-pill) .toast-stack {
 
   /* Thumb-sized targets: bars and rows grow. */
   .terminal-head {
-    height: 40px;
+    height: 44px;
+  }
+
+  .terminal-actions .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
   }
 
   /* The top bar already carries the session name + activity dot; showing
