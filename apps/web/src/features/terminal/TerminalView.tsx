@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { SessionWithRuntime } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { IconAttach, IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconNewLine, IconPaste, IconSearch } from "../../components/icons";
@@ -20,9 +21,11 @@ const STATUS_BANNER: Partial<Record<TerminalStatus, string>> = {
 export function TerminalView({
   data,
   variant,
+  mobileActionsTarget,
 }: {
   data: SessionWithRuntime;
   variant: "agent" | "tool";
+  mobileActionsTarget?: HTMLElement | null;
 }) {
   const { session, runtime } = data;
   const terminal = useTerminalWs(
@@ -35,6 +38,10 @@ export function TerminalView({
   // Keep in sync with the @media (max-width: 760px) blocks in theme.css.
   const isMobile = useMediaQuery("(max-width: 760px)");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const mobilePanel = useUi((state) => state.mobilePanel);
+  const openDiff = useUi((state) => state.openDiff);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
   const exited = variant === "agent" && runtime.activity === "exited";
@@ -64,8 +71,17 @@ export function TerminalView({
     };
   }, [menu]);
 
-  const openMenu = (anchor: HTMLElement) => {
+  useEffect(() => {
+    if (menu) menuRef.current?.querySelector("button")?.focus();
+  }, [menu]);
+
+  useEffect(() => {
+    if (variant === "agent" && (mobilePanel !== "none" || openDiff)) setMenu(null);
+  }, [variant, mobilePanel, openDiff]);
+
+  const openMenu = (anchor: HTMLButtonElement) => {
     const rect = anchor.getBoundingClientRect();
+    menuTriggerRef.current = anchor;
     const next = {
       x: Math.min(rect.left, window.innerWidth - 172),
       y: rect.bottom + 4,
@@ -99,10 +115,43 @@ export function TerminalView({
     variant === "agent" && exited
       ? "session exited"
       : STATUS_BANNER[terminal.status];
+  const mobileAgentHeaderMerged = isMobile && variant === "agent" && !fullscreen;
+  const mobileActionsPortaled = mobileAgentHeaderMerged && !!mobileActionsTarget;
+  const mobileActions = (
+    <>
+      {variant === "agent" && (
+        <button
+          type="button"
+          className="icon-btn"
+          title="Upload attachment"
+          aria-label="Upload attachment"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <IconAttach />
+        </button>
+      )}
+      <button
+        type="button"
+        className="icon-btn"
+        title="Terminal actions"
+        aria-label="Terminal actions"
+        aria-expanded={menu !== null}
+        aria-controls={menu ? "terminal-actions-menu" : undefined}
+        data-ctx-opener=""
+        onClick={(event) => openMenu(event.currentTarget)}
+      >
+        ⋯
+      </button>
+    </>
+  );
 
   return (
     <div className={fullscreen ? "terminal-view fullscreen" : "terminal-view"}>
-      <div className="terminal-head">
+      {mobileActionsPortaled && createPortal(
+        <div className="terminal-actions">{mobileActions}</div>,
+        mobileActionsTarget,
+      )}
+      {!mobileAgentHeaderMerged && <div className="terminal-head">
         <div className="terminal-title">
           {variant === "agent" ? session.name : `${session.name} · tool shell`}
           {variant === "agent" && (
@@ -112,30 +161,7 @@ export function TerminalView({
         </div>
         <div className="terminal-actions">
           {isMobile ? (
-            <>
-              {variant === "agent" && (
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title="Upload attachment"
-                  aria-label="Upload attachment"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <IconAttach />
-                </button>
-              )}
-              <button
-                type="button"
-                className="icon-btn"
-                title="Terminal actions"
-                aria-label="Terminal actions"
-                aria-haspopup="menu"
-                data-ctx-opener=""
-                onClick={(event) => openMenu(event.currentTarget)}
-              >
-                ⋯
-              </button>
-            </>
+            mobileActions
           ) : (
             <>
               <button
@@ -206,7 +232,7 @@ export function TerminalView({
             </>
           )}
         </div>
-      </div>
+      </div>}
 
       {isMobile && variant === "agent" && (
         <input
@@ -314,7 +340,21 @@ export function TerminalView({
       )}
 
       {menu && (
-        <div className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
+        <div
+          ref={menuRef}
+          id="terminal-actions-menu"
+          className="ctx-menu"
+          role="group"
+          aria-label="Terminal actions"
+          style={{ left: menu.x, top: menu.y }}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            setMenu(null);
+            menuTriggerRef.current?.focus({ preventScroll: true });
+          }}
+        >
           <button
             type="button"
             onClick={() => {
@@ -469,4 +509,3 @@ export function TerminalView({
     </div>
   );
 }
-

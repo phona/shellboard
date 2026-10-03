@@ -1422,6 +1422,58 @@ button:focus-visible {
   gap: 6px;
 }
 
+.settings-inline {
+  flex: none;
+  border-top: 1px solid var(--border);
+}
+
+.settings-inline summary {
+  min-height: 44px;
+  padding: 11px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.settings-inline summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.settings-inline-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(60dvh, 480px);
+  overflow-y: auto;
+  padding: 10px 12px 14px;
+}
+
+.settings-inline-content label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.settings-inline-content .stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.settings-inline-content button,
+.settings-inline-content select,
+.settings-inline-content input {
+  min-height: 44px;
+}
+
+.settings-inline-content .command-add input {
+  width: 100%;
+}
+
 /* ---------- toasts ---------- */
 
 .toast-stack {
@@ -1717,6 +1769,19 @@ body:has(.live-pill) .toast-stack {
 
   .topbar-toggle.active {
     color: var(--accent);
+  }
+
+  .mobile-terminal-action-slot {
+    display: flex;
+    align-items: center;
+  }
+
+  .mobile-terminal-action-slot.hidden {
+    display: none;
+  }
+
+  .mobile-terminal-action-slot .terminal-actions {
+    margin-left: 0;
   }
 
   .topbar-toggle .badge {

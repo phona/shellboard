@@ -95,6 +95,7 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
   // (flex:1) absorbs the freed width — the xterm container would grow, refit,
   // resize the PTY and reflow tmux, then reflow again on restore.
   const [frozenCenterWidth, setFrozenCenterWidth] = useState<number | null>(null);
+  const [mobileTerminalActionsTarget, setMobileTerminalActionsTarget] = useState<HTMLDivElement | null>(null);
 
   const maximize = useCallback(() => {
     setFrozenCenterWidth(centerRef.current?.getBoundingClientRect().width ?? null);
@@ -371,7 +372,12 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
     <>
       <div className={openDiff ? "terminal-slot hidden" : "terminal-slot"}>
         <ErrorBoundary>
-          <TerminalView key={selected.session.id} data={selected} variant="agent" />
+          <TerminalView
+            key={selected.session.id}
+            data={selected}
+            variant="agent"
+            mobileActionsTarget={mobileTerminalActionsTarget}
+          />
         </ErrorBoundary>
       </div>
       {openDiff && (
@@ -464,8 +470,12 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
           <IconPanelRight />
           {diffCount > 0 && <span className="badge">{diffCount}</span>}
         </button>
-        <CycleThemeButton />
-        <SettingsPopover />
+        <div
+          ref={setMobileTerminalActionsTarget}
+          className={openDiff || mobilePanel === "tools"
+            ? "mobile-terminal-action-slot hidden"
+            : "mobile-terminal-action-slot"}
+        />
       </div>
     </header>
   );
@@ -554,6 +564,7 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
               </span>
             </div>
             {sidebar}
+            <SettingsPopover inline />
           </aside>
           {mobilePanel === "tools" && (
             <aside className="toolview mobile-drawer" aria-label="Tools">

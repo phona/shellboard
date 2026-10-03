@@ -3,12 +3,9 @@ import { getThemeMode, setThemeMode, type ThemeMode } from "../state/theme";
 import { useCommands } from "../state/commands";
 import { useUi } from "../state/store";
 
-export function SettingsPopover() {
+export function SettingsPopover({ inline = false }: { inline?: boolean }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<ThemeMode>(getThemeMode());
-  const fontSize = useUi((state) => state.fontSize);
-  const scrollback = useUi((state) => state.scrollback);
-  const notifications = useUi((state) => state.notifications);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -21,6 +18,17 @@ export function SettingsPopover() {
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, [open]);
+
+  if (inline) {
+    return (
+      <details className="settings-inline">
+        <summary>Settings</summary>
+        <div className="settings-inline-content">
+          <SettingsControls mode={mode} setMode={setMode} />
+        </div>
+      </details>
+    );
+  }
 
   return (
     <div className="settings-wrap" ref={wrapRef}>
@@ -35,68 +43,84 @@ export function SettingsPopover() {
       </button>
       {open && (
         <div className="popover">
-          <label>
-            Theme
-            <select
-              value={mode}
-              onChange={(event) => {
-                const value = event.target.value as ThemeMode;
-                setMode(value);
-                setThemeMode(value);
-              }}
-            >
-              <option value="system">System</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </select>
-          </label>
-          <label>
-            Font size
-            <span className="stepper">
-              <button
-                type="button"
-                onClick={() => useUi.getState().setFontSize(fontSize - 1)}
-              >
-                −
-              </button>
-              {fontSize}px
-              <button
-                type="button"
-                onClick={() => useUi.getState().setFontSize(fontSize + 1)}
-              >
-                +
-              </button>
-            </span>
-          </label>
-          <label>
-            Initial history
-            <select
-              title="History loaded when a terminal connects. Deeper history loads on demand as you scroll to the top — no page reload needed."
-              value={scrollback}
-              onChange={(event) =>
-                useUi.getState().setScrollback(Number(event.target.value))
-              }
-            >
-              <option value={1000}>1 000</option>
-              <option value={5000}>5 000</option>
-              <option value={10000}>10 000</option>
-              <option value={20000}>20 000</option>
-            </select>
-          </label>
-          <label>
-            Notify on working → idle
-            <input
-              type="checkbox"
-              checked={notifications}
-              onChange={(event) =>
-                useUi.getState().setNotifications(event.target.checked)
-              }
-            />
-          </label>
-          <CommandRegistry />
+          <SettingsControls mode={mode} setMode={setMode} />
         </div>
       )}
     </div>
+  );
+}
+
+function SettingsControls({
+  mode,
+  setMode,
+}: {
+  mode: ThemeMode;
+  setMode: (mode: ThemeMode) => void;
+}) {
+  const fontSize = useUi((state) => state.fontSize);
+  const scrollback = useUi((state) => state.scrollback);
+  const notifications = useUi((state) => state.notifications);
+
+  return (
+    <>
+      <label>
+        Theme
+        <select
+          value={mode}
+          onChange={(event) => {
+            const value = event.target.value as ThemeMode;
+            setMode(value);
+            setThemeMode(value);
+          }}
+        >
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+      <label>
+        Font size
+        <span className="stepper">
+          <button
+            type="button"
+            aria-label="Decrease font size"
+            onClick={() => useUi.getState().setFontSize(fontSize - 1)}
+          >
+            −
+          </button>
+          {fontSize}px
+          <button
+            type="button"
+            aria-label="Increase font size"
+            onClick={() => useUi.getState().setFontSize(fontSize + 1)}
+          >
+            +
+          </button>
+        </span>
+      </label>
+      <label>
+        Initial history
+        <select
+          title="History loaded when a terminal connects. Deeper history loads on demand as you scroll to the top — no page reload needed."
+          value={scrollback}
+          onChange={(event) => useUi.getState().setScrollback(Number(event.target.value))}
+        >
+          <option value={1000}>1 000</option>
+          <option value={5000}>5 000</option>
+          <option value={10000}>10 000</option>
+          <option value={20000}>20 000</option>
+        </select>
+      </label>
+      <label>
+        Notify on working → idle
+        <input
+          type="checkbox"
+          checked={notifications}
+          onChange={(event) => useUi.getState().setNotifications(event.target.checked)}
+        />
+      </label>
+      <CommandRegistry />
+    </>
   );
 }
 
