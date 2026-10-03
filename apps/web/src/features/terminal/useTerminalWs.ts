@@ -806,6 +806,24 @@ export function useTerminalWs(path: string): TerminalApi {
               // reconcile cadence unpredictable.
               if (isSlowTransfer(seedStartedAt, Date.now())) slowLink = true;
               outputSinceReconcile = false;
+              // Wipe here, with the seed's bytes already in hand — not on the
+              // seed-start control frame, one socket frame earlier. xterm
+              // batches every refresh into a single requestAnimationFrame, so
+              // the wipe's full-screen repaint and the write's repaint
+              // coalesce: at worst a large seed parses across a frame or two
+              // and the reader watches it paint in, which is what receiving a
+              // big burst of output already looks like. Wiping on the control
+              // frame instead cleared the rendered buffer and then waited for a
+              // second socket frame to carry the seed, so the reader got a
+              // blank terminal for that gap plus a full repaint
+              // (REMOTE-TERMINAL 4.1).
+              //
+              // It also fails the safer way round. A seed-start whose bytes
+              // never arrive (socket dies mid-reseed) now leaves the reader in
+              // the buffer they already had instead of a wiped one — the same
+              // trade as seed-skipped (3.5), where keeping what is there beats
+              // clearing for a repair that did not happen.
+              term.reset();
               term.write(new Uint8Array(event.data), () => {
                 expanding = false;
                 if (!from) return;
@@ -897,10 +915,16 @@ export function useTerminalWs(path: string): TerminalApi {
                   baseY: term.buffer.active.baseY,
                 };
               }
-              // A zero-line seed carries no bytes — do not wait for one.
+              // A zero-line seed carries no bytes — do not wait for one. Its
+              // body, when it has one (a pane with no history still has a
+              // screen), arrives as the next binary frame and is consumed as
+              // live output, so there is nothing to synchronize the wipe with:
+              // it has to happen here, on the control frame.
               expectingSeed = message.lines !== 0;
-              if (!expectingSeed) expanding = false;
-              term.reset();
+              if (!expectingSeed) {
+                expanding = false;
+                term.reset();
+              }
             }
           } catch {
             // non-JSON control frame

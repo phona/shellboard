@@ -61,3 +61,39 @@ describe("historyReconcile is wired into the terminal hook", () => {
     );
   });
 });
+
+describe("a re-seed wipes the buffer with the seed bytes already in hand", () => {
+  // The wipe used to hang off the seed-start control frame, one socket frame
+  // before the seed itself. The reader therefore watched a blank terminal for
+  // as long as that frame took to arrive, then a full repaint, then the seed —
+  // three visible steps for one buffer replacement (REMOTE-TERMINAL 4.1 costs
+  // the repaint at 20.6 ms). xterm batches every refresh into one
+  // requestAnimationFrame, so wiping next to the write coalesces the two
+  // repaints: the reader watches the seed paint in instead of a blank screen
+  // painted and then replaced.
+  const seedBranch = hookSource.slice(hookSource.indexOf("if (expectingSeed) {"));
+  const controlFrameBranch = hookSource.slice(
+    hookSource.indexOf('message.type === "seed-start"'),
+  );
+  const seedWipeAt = seedBranch.indexOf("term.reset()");
+
+  it("resets before writing the seed, not on the control frame", () => {
+    expect(seedWipeAt).toBeGreaterThan(-1);
+    expect(seedWipeAt).toBeLessThan(
+      seedBranch.indexOf("term.write(new Uint8Array(event.data)"),
+    );
+  });
+
+  it("wipes on the control frame only for a seed that carries no bytes", () => {
+    // A zero-line seed has no body of its own — its bytes come through the
+    // live-output path, so there is nothing to synchronize the wipe with and it
+    // has to happen on the control frame. Any seed that does carry a body must
+    // not clear a buffer the reader is looking at while that body is still in
+    // flight: the guard has to come before the wipe, or the wipe is unconditional.
+    const beforeWipe = controlFrameBranch.slice(0, controlFrameBranch.indexOf("term.reset()"));
+    expect(beforeWipe).toContain("expectingSeed = message.lines !== 0");
+    // And there has to be one at all: a pane with no history still has a screen,
+    // and that screen is the only thing this re-seed delivers.
+    expect(controlFrameBranch.indexOf("term.reset()")).toBeGreaterThan(-1);
+  });
+});

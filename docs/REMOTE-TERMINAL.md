@@ -143,6 +143,8 @@ capture-pane **总是返回一致的 pane 状态**(tmux 的 grid 对读者原子
 
 深度与种子大小(实测):500 → 44.6 KB / 1000 → 88.1 KB / 4990 → 371 KB。
 
+> wipe 已从 `seed-start` 控制帧移到种子二进制帧上,和 `term.write(seed)` 同一个事件里完成。xterm 把每次 refresh 都批进同一个 `requestAnimationFrame`,两次重绘因此合并:坏情况是大种子跨一两个 frame 才解析完,读者看到的是种子往里画,而不是一块空白被画出来又被替换。附带更安全的失败方向——种子帧永不到达(socket 在重播种中途断)时,读者留在原有缓冲里,而不是一块已被清空的终端。
+
 ### 4.2 切换 session 的成本(比校准高一个量级)
 
 | session | pane 历史 | 接入种子(深度 4990) |
