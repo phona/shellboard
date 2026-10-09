@@ -137,6 +137,18 @@ export const UploadListSchema = z.object({
 });
 export type UploadList = z.infer<typeof UploadListSchema>;
 
+/**
+ * Hard ceiling for a single binary upload, in bytes.
+ *
+ * The server enforces it as Fastify's per-route bodyLimit on both upload
+ * lanes; the web client reads the same constant to refuse an oversized file
+ * before any bytes leave the device. Behind a Cloudflare front the edge caps
+ * a request body at the same size and answers with an HTML 413 that a
+ * JSON-parsing client cannot read, so the number has to be known on both
+ * sides of the wire and stay in one place.
+ */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
 export const NotifyLevelSchema = z.enum(["info", "success", "warning", "error"]);
 export type NotifyLevel = z.infer<typeof NotifyLevelSchema>;
 

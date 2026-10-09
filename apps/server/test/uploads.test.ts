@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execa } from "execa";
 import { expect, it } from "vitest";
+import { MAX_UPLOAD_BYTES } from "@shellboard/contracts";
 import { buildApp } from "../src/app";
 import type { Services } from "../src/services";
 import { afterAllCleanup, createServices, makeTempDir, sleep } from "./helpers";
@@ -42,6 +43,33 @@ function postUpload(
     headers: { "content-type": "application/octet-stream" },
   });
 }
+
+it("the shared limit is the route's bodyLimit: MAX_UPLOAD_BYTES lands, one byte more is 413", async () => {
+  // The web client refuses an oversized file locally using the same constant,
+  // so the two must not drift apart.
+  const services = await createServices();
+  const { sessionId } = await createShellSession(services);
+  const app = await buildApp(services, { logger: false });
+
+  const atLimit = await postUpload(
+    app,
+    sessionId,
+    "at-limit.bin",
+    Buffer.alloc(MAX_UPLOAD_BYTES, 0x61),
+  );
+  expect(atLimit.statusCode).toBe(201);
+
+  const overLimit = await postUpload(
+    app,
+    sessionId,
+    "over-limit.bin",
+    Buffer.alloc(MAX_UPLOAD_BYTES + 1, 0x61),
+  );
+  expect(overLimit.statusCode).toBe(413);
+  expect((overLimit.json() as { error?: string }).error).toBe("Request body is too large");
+
+  await app.close();
+});
 
 it("buffer upload lands in ~/.shellboard/uploads/<sid> with bytes intact", async () => {
   const services = await createServices();

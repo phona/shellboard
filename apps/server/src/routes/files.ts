@@ -2,6 +2,7 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import {
   CreateFileInputSchema,
+  MAX_UPLOAD_BYTES,
   RenameFileInputSchema,
   SaveFileInputSchema,
   UploadToDirQuerySchema,
@@ -9,8 +10,6 @@ import {
 import type { Services } from "../services.js";
 import { httpError } from "../errors.js";
 import { paramId, parseBody, parseQuery, queryString } from "../http/helpers.js";
-
-const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 function requiredPath(request: { query: unknown }): string {
   const query = queryString(request);

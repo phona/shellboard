@@ -27,8 +27,9 @@ export async function buildApp(
   });
 
   // Binary uploads POST the raw file as application/octet-stream (no
-  // multipart dependency). Per-route bodyLimit caps each upload at 100MB;
-  // the global JSON limit stays at Fastify's default.
+  // multipart dependency). Per-route bodyLimit caps each upload at
+  // MAX_UPLOAD_BYTES (see contracts); the global JSON limit stays at
+  // Fastify's default.
   app.addContentTypeParser(
     "application/octet-stream",
     { parseAs: "buffer" },

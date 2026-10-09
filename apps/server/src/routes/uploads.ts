@@ -1,13 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import {
+  MAX_UPLOAD_BYTES,
   SendUploadInputSchema,
   UploadQuerySchema,
 } from "@shellboard/contracts";
 import type { Services } from "../services.js";
 import { httpError } from "../errors.js";
 import { paramId, parseBody, parseQuery, queryString } from "../http/helpers.js";
-
-const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 /** Upload buffer lane: ~/.shellboard/uploads/<sessionId>/ (D1 second root). */
 export function registerUploadRoutes(app: FastifyInstance, services: Services): void {

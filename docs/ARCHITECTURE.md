@@ -280,11 +280,11 @@ GET    /api/sessions/:id/files/content?path=
 PUT    /api/sessions/:id/files/content?path=
 GET    /api/sessions/:id/files/download?path= # 原始字节下载(≤100MB)
 POST   /api/sessions/:id/files                # create(JSON)
-POST   /api/sessions/:id/files/upload         # 二进制上传到 cwd 内目录 ?path=&name=(≤100MB,重名 409)
+POST   /api/sessions/:id/files/upload         # 二进制上传到 cwd 内目录 ?path=&name=(≤MAX_UPLOAD_BYTES,重名 409)
 PATCH  /api/sessions/:id/files                # rename
 DELETE /api/sessions/:id/files?path=&recursive=
 
-POST   /api/sessions/:id/uploads              # 二进制上传到上传缓冲区 ?name=(≤100MB,重名自动改名)
+POST   /api/sessions/:id/uploads              # 二进制上传到上传缓冲区 ?name=(≤MAX_UPLOAD_BYTES,重名自动改名)
 GET    /api/sessions/:id/uploads              # 缓冲区列表(最新在前)
 DELETE /api/sessions/:id/uploads?name=        # 删除缓冲区文件
 POST   /api/sessions/:id/uploads/send         # 把绝对路径打进 agent pane(D6,无换行不回车)
