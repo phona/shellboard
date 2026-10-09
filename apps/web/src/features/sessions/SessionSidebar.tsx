@@ -130,6 +130,7 @@ export function SessionSidebar() {
   const [confirmKill, setConfirmKill] = useState<SessionWithRuntime | null>(null);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [createSessionFor, setCreateSessionFor] = useState<Project | null>(null);
+  const [confirmDeleteProject, setConfirmDeleteProject] = useState<Project | null>(null);
 
   const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: api.sessions.list });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: api.projects.list });
@@ -151,6 +152,14 @@ export function SessionSidebar() {
       void queryClient.invalidateQueries({ queryKey: ["sessions"] });
     },
     onError: (err) => toast(err instanceof ApiError ? err.message : "rename failed", "error"),
+  });
+  const deleteProject = useMutation({
+    mutationFn: (id: string) => api.projects.remove(id),
+    onSuccess: () => {
+      setConfirmDeleteProject(null);
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: (err) => toast(err instanceof ApiError ? err.message : "delete failed", "error"),
   });
 
   useEffect(() => {
@@ -246,12 +255,15 @@ export function SessionSidebar() {
                 onClick={() => toggleProject(project.id)}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" && event.key !== " ") return;
+                  // Nested buttons handle their own keys; the row must not also
+                  // toggle the group on top of that.
+                  if ((event.target as HTMLElement).closest("button")) return;
                   event.preventDefault();
                   toggleProject(project.id);
                 }}
               >
                 <span className={collapsed ? "chevron" : "chevron open"}>▸</span>
-                <span>{project.name}</span>
+                <span className="name">{project.name}</span>
                 <span className="spacer" />
                 <button
                   type="button"
@@ -264,6 +276,21 @@ export function SessionSidebar() {
                 >
                   +
                 </button>
+                {/* Hidden until the row is hovered or focused: a destructive
+                    action is never one misclick away. */}
+                <span className="row-actions">
+                  <button
+                    type="button"
+                    title="Delete project"
+                    aria-label={`Delete ${project.name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setConfirmDeleteProject(project);
+                    }}
+                  >
+                    ×
+                  </button>
+                </span>
               </div>
               {!collapsed &&
                 sessions.map((item) => (
@@ -377,6 +404,38 @@ export function SessionSidebar() {
               }}
             >
               Kill
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {confirmDeleteProject && (
+        <Modal title="Delete project" onClose={() => setConfirmDeleteProject(null)}>
+          <div>
+            Delete <strong>{confirmDeleteProject.name}</strong>? The project entry is
+            removed from the sidebar. Sessions are never deleted by this action.
+          </div>
+          {/* The server refuses the delete while the project still has
+              sessions; stating it here beats a failed request. */}
+          {sessionsFor(confirmDeleteProject.id).length > 0 && (
+            <div className="muted" style={{ marginTop: 6 }}>
+              This project still has {sessionsFor(confirmDeleteProject.id).length} sessions.
+              Delete them first.
+            </div>
+          )}
+          <div className="modal-actions">
+            <button type="button" onClick={() => setConfirmDeleteProject(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn danger"
+              disabled={
+                sessionsFor(confirmDeleteProject.id).length > 0 || deleteProject.isPending
+              }
+              onClick={() => deleteProject.mutate(confirmDeleteProject.id)}
+            >
+              Delete
             </button>
           </div>
         </Modal>

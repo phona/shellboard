@@ -384,6 +384,38 @@ button:focus-visible {
   flex: 1;
 }
 
+/* The row carries two action buttons; a long name must ellipsize instead of
+   squeezing them out of the sidebar. */
+.project-head .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Project row actions follow the file/diff row pattern: hidden until the row
+   is hovered or focused, so a destructive action is never one misclick away. */
+.project-head .row-actions {
+  display: none;
+  gap: 2px;
+}
+
+.project-head:hover .row-actions,
+.project-head:focus-within .row-actions {
+  display: flex;
+}
+
+.project-head .row-actions button {
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.project-head .row-actions button:hover {
+  color: var(--danger);
+}
+
 .session-row {
   display: flex;
   align-items: stretch;
@@ -2035,7 +2067,8 @@ body:has(.live-pill) .toast-stack {
 /* Touch devices have no hover: row actions must not hide behind it. */
 @media (hover: none) {
   .file-row .row-actions,
-  .tree-row .row-actions {
+  .tree-row .row-actions,
+  .project-head .row-actions {
     display: flex;
   }
 }
