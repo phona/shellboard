@@ -126,8 +126,10 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
   if (editing) {
     return (
       <FileEditor
+        key={editing}
         sessionId={id}
         path={editing}
+        onNavigatePath={setEditing}
         onBack={() => {
           setEditing(null);
           void invalidate();
