@@ -1,3 +1,4 @@
+import { MAX_UPLOAD_BYTES } from "@shellboard/contracts";
 import type {
   CreateFileInput,
   CreateProjectInput,
@@ -14,6 +15,7 @@ import type {
   SessionWithRuntime,
   UploadList,
 } from "@shellboard/contracts";
+import { formatSize } from "../util/format.js";
 import { useUi } from "../state/store.js";
 
 export class ApiError extends Error {
@@ -160,15 +162,73 @@ export interface UploadTarget {
   dir?: string;
 }
 
+export interface UploadBinaryOptions {
+  onProgress?: (percent: number) => void;
+  /** Called with the attempt number and the reason the previous one died. */
+  onRetry?: (attempt: number, reason: string) => void;
+}
+
 /**
- * Raw binary upload (application/octet-stream) with progress. fetch() has no
- * upload progress, so this is an XMLHttpRequest. Resolves with the final
- * server-side name (the buffer lane uniquifies collisions).
+ * Mobile networks stall instead of failing: a connection with no new bytes for
+ * this long is treated as dead and the attempt is cut short. The watch only
+ * covers the send phase — once the body is out, UPLOAD_TIMEOUT_MS takes over,
+ * because a slow server is not a stalled upload.
  */
-export function uploadBinary(
+const UPLOAD_STALL_MS = 30_000;
+/** Backstop for a body that was sent but whose response never arrived. */
+const UPLOAD_TIMEOUT_MS = 900_000;
+/** One retry, and only for a failure that never got an HTTP response: the
+    buffer lane uniquifies colliding names, so replaying an upload that may
+    have landed duplicates the file. */
+const UPLOAD_ATTEMPTS = 2;
+
+const oversizeMessage = `file exceeds the ${formatSize(MAX_UPLOAD_BYTES)} upload limit`;
+
+function isTransportFailure(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 0;
+}
+
+/** A browser kills an in-flight upload when the page is hidden (locked phone,
+    switched app) and reports it as a bare transport failure. */
+function pageBackgrounded(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+function deviceOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+/** Byte progress of one transfer, carried across attempts: a retry that dies
+    before its first progress event still reports how far the file got. */
+interface TransferProgress {
+  sent: number;
+  total: number;
+}
+
+/**
+ * Why the transport died, from the furthest point the body reached. That byte
+ * count is what separates a request that never left the device from one the
+ * network cut off — a phone on a weak link looks like the latter, a blocked or
+ * misrouted request like the former. An attempt with no progress event at all
+ * carries no signal, so it stays plain.
+ */
+function interruptReason(stalled: boolean, progress: TransferProgress): string {
+  if (stalled) return `upload stalled (no progress for ${UPLOAD_STALL_MS / 1000}s)`;
+  if (pageBackgrounded()) return "upload interrupted (the app went to the background)";
+  if (deviceOffline()) return "network error (device is offline)";
+  if (progress.total === 0) return "network error";
+  if (progress.sent >= progress.total) return "network error (body sent, no response)";
+  if (progress.sent === 0) return "network error (no bytes left the device)";
+  return `network error (sent ${formatSize(progress.sent)} of ${formatSize(progress.total)}, connection dropped)`;
+}
+
+/** One attempt. Resolves with the server-side name (the buffer lane
+    uniquifies collisions). */
+function uploadOnce(
   target: UploadTarget,
   file: File,
-  onProgress?: (percent: number) => void,
+  options: UploadBinaryOptions,
+  progress: TransferProgress,
 ): Promise<{ name: string }> {
   const search =
     target.dir === undefined
@@ -180,15 +240,42 @@ export function uploadBinary(
       : `/api/sessions/${target.sessionId}/files/upload${search}`;
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let stalled = false;
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearStallWatch = () => {
+      if (stallTimer !== undefined) clearTimeout(stallTimer);
+      stallTimer = undefined;
+    };
+    const armStallWatch = () => {
+      clearStallWatch();
+      stallTimer = setTimeout(() => {
+        stallTimer = undefined;
+        stalled = true;
+        xhr.abort();
+      }, UPLOAD_STALL_MS);
+    };
+
     xhr.open("POST", url);
     xhr.responseType = "json";
+    xhr.timeout = UPLOAD_TIMEOUT_MS;
     xhr.setRequestHeader("content-type", "application/octet-stream");
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && event.total > 0 && onProgress) {
-        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      if (event.lengthComputable && event.total > 0) {
+        progress.sent = event.loaded;
+        progress.total = event.total;
+        const percent = Math.min(100, Math.round((event.loaded / event.total) * 100));
+        options.onProgress?.(percent);
+        // The body is fully out: waiting for the answer is no longer a stall.
+        if (percent >= 100) clearStallWatch();
+        return;
       }
+      armStallWatch();
     };
+    // A body small enough to go out in one write may fire no progress event
+    // with loaded >= total; upload.onload still fires on success.
+    xhr.upload.onload = clearStallWatch;
     xhr.onload = () => {
+      clearStallWatch();
       if (xhr.status === 401) {
         useUi.getState().setAuthRequired(true);
         reject(new ApiError(401, "unauthorized"));
@@ -199,11 +286,58 @@ export function uploadBinary(
         resolve({ name: body.name });
         return;
       }
+      // A body over the limit is answered by the edge with an HTML page,
+      // which responseType "json" turns into null: name the limit instead of
+      // repeating a status line the user cannot act on.
+      if (xhr.status === 413 && body?.error === undefined) {
+        reject(new ApiError(413, oversizeMessage));
+        return;
+      }
       reject(new ApiError(xhr.status, body?.error ?? `${xhr.status} ${xhr.statusText}`));
     };
-    xhr.onerror = () => reject(new ApiError(0, "network error"));
+    xhr.onerror = () => {
+      clearStallWatch();
+      reject(new ApiError(0, interruptReason(stalled, progress)));
+    };
+    xhr.onabort = () => {
+      clearStallWatch();
+      // Our own abort (the stall watch) is the only one this code performs.
+      reject(new ApiError(0, stalled ? interruptReason(stalled, progress) : "upload canceled"));
+    };
+    xhr.ontimeout = () => {
+      clearStallWatch();
+      reject(new ApiError(0, "upload timed out"));
+    };
+    armStallWatch();
     xhr.send(file);
   });
+}
+
+/**
+ * Raw binary upload (application/octet-stream) with progress. fetch() has no
+ * upload progress, so this is an XMLHttpRequest. Resolves with the final
+ * server-side name (the buffer lane uniquifies collisions).
+ */
+export async function uploadBinary(
+  target: UploadTarget,
+  file: File,
+  options: UploadBinaryOptions = {},
+): Promise<{ name: string }> {
+  // Refuse locally: sending a body the edge (or the server) will cut off only
+  // burns the user's connection to learn what the file size already says.
+  if (file.size > MAX_UPLOAD_BYTES) throw new ApiError(413, oversizeMessage);
+  const progress: TransferProgress = { sent: 0, total: 0 };
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await uploadOnce(target, file, options, progress);
+    } catch (error) {
+      if (attempt >= UPLOAD_ATTEMPTS || !isTransportFailure(error)) throw error;
+      // The reason travels with the retry: if the second attempt lands, the
+      // first one's failure is otherwise never reported anywhere.
+      const reason = error instanceof ApiError ? error.message : "unknown failure";
+      options.onRetry?.(attempt + 1, reason);
+    }
+  }
 }
 
 export function wsUrl(path: string): string {

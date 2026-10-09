@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_UPLOAD_BYTES } from "@shellboard/contracts";
 import { api, ApiError, uploadBinary, wsUrl } from "./client";
 
 /** A fetch stand-in that records the call and answers with a canned response. */
@@ -148,11 +149,26 @@ describe("wsUrl", () => {
 });
 
 describe("uploadBinary", () => {
-  /** Minimal XMLHttpRequest double. The code assigns onload/onerror/upload
-      .onprogress and then calls send(), so capturing those three is enough. */
-  function stubXhr(behaviour: { status?: number; response?: unknown; fail?: boolean } = {}): {
+  /** Minimal XMLHttpRequest double. The code assigns onload/onerror/onabort/
+      ontimeout/upload.onprogress and then calls send(), so capturing those is
+      enough. `failTimes` makes that many sends die at the transport level
+      before one succeeds; `manual` leaves every request hanging so the test
+      can drive the ending through fail()/timeout(). */
+  function stubXhr(
+    behaviour: {
+      status?: number;
+      response?: unknown;
+      failTimes?: number;
+      hold?: boolean;
+      timeout?: boolean;
+      manual?: boolean;
+    } = {},
+  ): {
     progress: (event: { lengthComputable: boolean; total: number; loaded: number }) => void;
     opened: string[];
+    sends: () => number;
+    fail: () => void;
+    timeout: () => void;
   } {
     const opened: string[] = [];
     let onProgress: ((event: unknown) => void) | undefined;
@@ -163,28 +179,60 @@ describe("uploadBinary", () => {
       },
       get: () => onProgress,
     });
+    let failuresLeft = behaviour.failTimes ?? 0;
+    let sends = 0;
+    let onerrorOf: (() => void) | null = null;
+    let ontimeoutOf: (() => void) | null = null;
     class FakeXhr {
       upload = upload;
       status = behaviour.status ?? 200;
       statusText = "OK";
       response = behaviour.response;
+      timeout = 0;
       onload: (() => void) | null = null;
       onerror: (() => void) | null = null;
+      onabort: (() => void) | null = null;
+      ontimeout: (() => void) | null = null;
       open(_method: string, url: string): void {
         opened.push(url);
       }
       setRequestHeader(): void {}
+      abort(): void {
+        this.onabort?.();
+      }
       send(): void {
-        if (behaviour.fail) this.onerror?.();
-        else this.onload?.();
+        // Handlers are wired before send(), so capturing them here points at
+        // the attempt the test is currently driving.
+        onerrorOf = this.onerror;
+        ontimeoutOf = this.ontimeout;
+        sends += 1;
+        if (behaviour.manual) return;
+        if (failuresLeft > 0) {
+          failuresLeft -= 1;
+          this.onerror?.();
+          return;
+        }
+        if (behaviour.timeout) {
+          this.ontimeout?.();
+          return;
+        }
+        this.onload?.();
       }
     }
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
-    return { progress: (event) => onProgress?.(event), opened };
+    return {
+      progress: (event) => onProgress?.(event),
+      opened,
+      sends: () => sends,
+      fail: () => onerrorOf?.(),
+      timeout: () => ontimeoutOf?.(),
+    };
   }
 
   const file = () => new File(["x"], "a.txt");
-
+  /** Let the retry's continuation run: the second send() happens in a
+      microtask after the first attempt rejects. */
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   it("resolves with the server-side name", async () => {
     stubXhr({ response: { name: "buffer/1-a.txt" } });
     await expect(uploadBinary({ sessionId: "s1" }, file())).resolves.toEqual({
@@ -195,7 +243,9 @@ describe("uploadBinary", () => {
   it("reports progress as a whole percentage", async () => {
     const xhr = stubXhr({ response: { name: "n" } });
     const seen: number[] = [];
-    const done = uploadBinary({ sessionId: "s1" }, file(), (p) => seen.push(p));
+    const done = uploadBinary({ sessionId: "s1" }, file(), {
+      onProgress: (p) => seen.push(p),
+    });
     xhr.progress({ lengthComputable: true, total: 100, loaded: 25 });
     xhr.progress({ lengthComputable: true, total: 100, loaded: 100 });
     await done;
@@ -205,7 +255,9 @@ describe("uploadBinary", () => {
   it("clamps progress past 100 instead of reporting an impossible value", async () => {
     const xhr = stubXhr({ response: { name: "n" } });
     const seen: number[] = [];
-    const done = uploadBinary({ sessionId: "s1" }, file(), (p) => seen.push(p));
+    const done = uploadBinary({ sessionId: "s1" }, file(), {
+      onProgress: (p) => seen.push(p),
+    });
     xhr.progress({ lengthComputable: true, total: 10, loaded: 40 });
     await done;
     expect(seen).toEqual([100]);
@@ -214,7 +266,9 @@ describe("uploadBinary", () => {
   it("ignores a progress event with no computable total", async () => {
     const xhr = stubXhr({ response: { name: "n" } });
     const seen: number[] = [];
-    const done = uploadBinary({ sessionId: "s1" }, file(), (p) => seen.push(p));
+    const done = uploadBinary({ sessionId: "s1" }, file(), {
+      onProgress: (p) => seen.push(p),
+    });
     xhr.progress({ lengthComputable: false, total: 0, loaded: 5 });
     await done;
     expect(seen).toEqual([]);
@@ -233,9 +287,155 @@ describe("uploadBinary", () => {
     await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({ status: 500 });
   });
 
-  it("turns a transport failure into a status-0 ApiError", async () => {
-    stubXhr({ fail: true });
-    await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({ status: 0 });
+  it("names the limit when the edge answers its HTML 413", async () => {
+    // A body over the edge cap comes back as an HTML page, which responseType
+    // "json" turns into null — there is no error field to show.
+    stubXhr({ status: 413, response: null });
+    await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({
+      status: 413,
+      message: "file exceeds the 100.0 MB upload limit",
+    });
+  });
+
+  it("refuses an oversized file without sending a byte", async () => {
+    const xhr = stubXhr({ response: { name: "n" } });
+    const big = { name: "clip.mp4", size: MAX_UPLOAD_BYTES + 1 } as unknown as File;
+    await expect(uploadBinary({ sessionId: "s1" }, big)).rejects.toMatchObject({
+      status: 413,
+      message: "file exceeds the 100.0 MB upload limit",
+    });
+    expect(xhr.opened).toEqual([]);
+  });
+
+  it("retries once after a transport failure and resolves on the second attempt", async () => {
+    const xhr = stubXhr({ response: { name: "n" }, failTimes: 1 });
+    const retries: number[] = [];
+    await expect(
+      uploadBinary({ sessionId: "s1" }, file(), { onRetry: (a) => retries.push(a) }),
+    ).resolves.toEqual({ name: "n" });
+    expect(xhr.sends()).toBe(2);
+    expect(retries).toEqual([2]);
+  });
+
+  it("does not replay a request the server answered", async () => {
+    const xhr = stubXhr({ status: 409, response: { error: "exists" } });
+    await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(xhr.sends()).toBe(1);
+  });
+
+  it("gives up after one retry and reports the transport failure", async () => {
+    const xhr = stubXhr({ failTimes: 2 });
+    await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({
+      status: 0,
+      message: "network error",
+    });
+    expect(xhr.sends()).toBe(2);
+  });
+
+  it("names the backgrounded tab as the reason for a dead upload", async () => {
+    // A locked phone or a switched app makes the browser kill the request and
+    // report a bare transport failure.
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    stubXhr({ failTimes: 2 });
+    await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({
+      status: 0,
+      message: "upload interrupted (the app went to the background)",
+    });
+  });
+
+  it("cuts a stalled upload short instead of waiting forever", async () => {
+    vi.useFakeTimers();
+    try {
+      stubXhr({ manual: true });
+      const retries: number[] = [];
+      const done = uploadBinary({ sessionId: "s1" }, file(), {
+        onRetry: (a) => retries.push(a),
+      });
+      const failure = expect(done).rejects.toMatchObject({
+        status: 0,
+        message: "upload stalled (no progress for 30s)",
+      });
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(retries).toEqual([2]);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await failure;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("distinguishes a timeout from a dead network", async () => {
+    stubXhr({ timeout: true });
+    await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({
+      status: 0,
+      message: "upload timed out",
+    });
+  });
+
+  it("names an offline device", async () => {
+    vi.stubGlobal("navigator", { onLine: false });
+    stubXhr({ failTimes: 2 });
+    await expect(uploadBinary({ sessionId: "s1" }, file())).rejects.toMatchObject({
+      status: 0,
+      message: "network error (device is offline)",
+    });
+  });
+
+  it("says how far the body got when the connection drops mid-upload", async () => {
+    // The byte count is what separates a request that never left the device
+    // from one the network cut off: a phone on a weak link looks like the
+    // latter, a blocked or misrouted request like the former.
+    const xhr = stubXhr({ manual: true });
+    const done = uploadBinary({ sessionId: "s1" }, file());
+    xhr.progress({ lengthComputable: true, total: 5_242_880, loaded: 3_145_728 });
+    const failure = expect(done).rejects.toMatchObject({
+      status: 0,
+      message: "network error (sent 3.0 MB of 5.0 MB, connection dropped)",
+    });
+    xhr.fail();
+    await tick();
+    xhr.fail();
+    await failure;
+  });
+
+  it("separates a lost response from a dropped upload", async () => {
+    const xhr = stubXhr({ manual: true });
+    const done = uploadBinary({ sessionId: "s1" }, file());
+    xhr.progress({ lengthComputable: true, total: 5_242_880, loaded: 5_242_880 });
+    const failure = expect(done).rejects.toMatchObject({
+      status: 0,
+      message: "network error (body sent, no response)",
+    });
+    xhr.fail();
+    await tick();
+    xhr.fail();
+    await failure;
+  });
+
+  it("says the request never got out when the first byte never landed", async () => {
+    const xhr = stubXhr({ manual: true });
+    const done = uploadBinary({ sessionId: "s1" }, file());
+    xhr.progress({ lengthComputable: true, total: 5_242_880, loaded: 0 });
+    const failure = expect(done).rejects.toMatchObject({
+      status: 0,
+      message: "network error (no bytes left the device)",
+    });
+    xhr.fail();
+    await tick();
+    xhr.fail();
+    await failure;
+  });
+
+  it("leaves the message plain when the attempt reported no progress", async () => {
+    const xhr = stubXhr({ manual: true });
+    const done = uploadBinary({ sessionId: "s1" }, file());
+    const failure = expect(done).rejects.toMatchObject({ status: 0, message: "network error" });
+    xhr.fail();
+    await tick();
+    xhr.fail();
+    await failure;
   });
 
   it("routes a buffer upload to uploads and a directory upload to files", async () => {

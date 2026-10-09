@@ -77,14 +77,16 @@ export function UploadManager() {
   const current = tasks[0];
   if (!current) return null;
   const rest = tasks.length - 1;
+  const label =
+    current.phase === "compressing"
+      ? `compressing ${current.name}${rest > 0 ? ` (+${rest})` : ""}`
+      : `uploading ${current.name} · ${current.percent}%${rest > 0 ? ` (+${rest})` : ""}`;
   return (
     <div className="upload-pill" role="status" aria-live="polite">
       <div className="upload-pill-track">
         <div className="upload-pill-bar" style={{ transform: `scaleX(${current.percent / 100})` }} />
       </div>
-      <span>
-        uploading {current.name} · {current.percent}%{rest > 0 ? ` (+${rest})` : ""}
-      </span>
+      <span>{label}</span>
     </div>
   );
 }
