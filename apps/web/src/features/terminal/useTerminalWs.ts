@@ -19,6 +19,7 @@ import {
   restoreCoveredReader,
   restoredViewportY,
 } from "./historyReconcile";
+import { inputModeSequences } from "./inputModes";
 
 export type TerminalStatus =
   | "connecting"
@@ -291,6 +292,18 @@ export function useTerminalWs(path: string): TerminalApi {
       // (tmux retains up to MAX_HISTORY_LINES) instead of losing it: the
       // seed-start payload reports how much actually arrived and whether
       // the pane has nothing deeper, which stops further requests.
+      // Wipe the buffer for a re-seed without forgetting what the pane app
+      // asked the terminal for. reset() is the only way to drop the whole
+      // buffer, but it clears every tracked private mode and nothing
+      // re-asserts them — see inputModes.ts. The cost of losing them lands
+      // on the input path: a multi-line paste pasted after a re-seed leaves
+      // as bare newlines and the shell executes it line by line.
+      const wipeBuffer = (): void => {
+        const restore = inputModeSequences(term.modes);
+        term.reset();
+        if (restore) term.write(restore);
+      };
+
       /** `depth` lets a caller ask for exactly what it needs. The scroll-to-top
           path leaves it out and takes the x3 ladder; a retry passes the depth
           that covers the reader, so it settles in one round instead of
@@ -823,7 +836,7 @@ export function useTerminalWs(path: string): TerminalApi {
               // the buffer they already had instead of a wiped one — the same
               // trade as seed-skipped (3.5), where keeping what is there beats
               // clearing for a repair that did not happen.
-              term.reset();
+              wipeBuffer();
               term.write(new Uint8Array(event.data), () => {
                 expanding = false;
                 if (!from) return;
@@ -923,7 +936,7 @@ export function useTerminalWs(path: string): TerminalApi {
               expectingSeed = message.lines !== 0;
               if (!expectingSeed) {
                 expanding = false;
-                term.reset();
+                wipeBuffer();
               }
             }
           } catch {

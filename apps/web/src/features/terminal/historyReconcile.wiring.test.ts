@@ -71,13 +71,16 @@ describe("a re-seed wipes the buffer with the seed bytes already in hand", () =>
   // requestAnimationFrame, so wiping next to the write coalesces the two
   // repaints: the reader watches the seed paint in instead of a blank screen
   // painted and then replaced.
+  // The wipe now goes through wipeBuffer(), which restores the pane's input
+  // modes around xterm's reset() (inputModes.wiring.test.ts); what is
+  // asserted here is unchanged — WHEN the buffer is cleared, not how.
   const seedBranch = hookSource.slice(hookSource.indexOf("if (expectingSeed) {"));
   const controlFrameBranch = hookSource.slice(
     hookSource.indexOf('message.type === "seed-start"'),
   );
-  const seedWipeAt = seedBranch.indexOf("term.reset()");
+  const seedWipeAt = seedBranch.indexOf("wipeBuffer()");
 
-  it("resets before writing the seed, not on the control frame", () => {
+  it("clears the buffer before writing the seed, not on the control frame", () => {
     expect(seedWipeAt).toBeGreaterThan(-1);
     expect(seedWipeAt).toBeLessThan(
       seedBranch.indexOf("term.write(new Uint8Array(event.data)"),
@@ -90,10 +93,10 @@ describe("a re-seed wipes the buffer with the seed bytes already in hand", () =>
     // has to happen on the control frame. Any seed that does carry a body must
     // not clear a buffer the reader is looking at while that body is still in
     // flight: the guard has to come before the wipe, or the wipe is unconditional.
-    const beforeWipe = controlFrameBranch.slice(0, controlFrameBranch.indexOf("term.reset()"));
+    const beforeWipe = controlFrameBranch.slice(0, controlFrameBranch.indexOf("wipeBuffer()"));
     expect(beforeWipe).toContain("expectingSeed = message.lines !== 0");
     // And there has to be one at all: a pane with no history still has a screen,
     // and that screen is the only thing this re-seed delivers.
-    expect(controlFrameBranch.indexOf("term.reset()")).toBeGreaterThan(-1);
+    expect(controlFrameBranch.indexOf("wipeBuffer()")).toBeGreaterThan(-1);
   });
 });
