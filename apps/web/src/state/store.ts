@@ -14,6 +14,7 @@ export interface OpenDiff {
 
 interface UiState {
   selectedSessionId: string | null;
+  terminalEpoch: number;
   openDiff: OpenDiff | null;
   rightTab: RightTab;
   leftCollapsed: boolean;
@@ -28,6 +29,7 @@ interface UiState {
   authRequired: boolean;
   searchQuery: string;
   selectSession(id: string | null): void;
+  bumpTerminalEpoch(): void;
   setOpenDiff(value: OpenDiff | null): void;
   setRightTab(tab: RightTab): void;
   toggleLeft(): void;
@@ -51,6 +53,7 @@ export const useUi = create<UiState>()(
   persist(
     (set) => ({
       selectedSessionId: null,
+      terminalEpoch: 0,
       openDiff: null,
   rightTab: "diff",
   leftCollapsed: false,
@@ -67,6 +70,7 @@ export const useUi = create<UiState>()(
       // a session switch invalidates the opened diff — it belongs to the
       // previous session's cwd
       selectSession: (id) => set({ selectedSessionId: id, openDiff: null }),
+      bumpTerminalEpoch: () => set((state) => ({ terminalEpoch: state.terminalEpoch + 1 })),
       setOpenDiff: (value) => set({ openDiff: value }),
       setRightTab: (tab) => set({ rightTab: tab }),
       toggleLeft: () => set((state) => ({ leftCollapsed: !state.leftCollapsed })),

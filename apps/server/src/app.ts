@@ -114,7 +114,13 @@ export async function buildApp(
     const toolMatch = pathname.match(/^\/api\/sessions\/([^/]+)\/tools\/terminal$/);
     if (toolMatch) {
       try {
-        services.tools.handle(ws, services.sessions.get(toolMatch[1] ?? "").cwd);
+        const session = services.sessions.get(toolMatch[1] ?? "");
+        const project = services.projects.get(session.projectId);
+        if (project.location.kind === "ssh") {
+          ws.close(1008, "remote tool terminal is not supported yet");
+          return;
+        }
+        services.tools.handle(ws, session.cwd);
       } catch {
         ws.close(1008, "session not found");
       }

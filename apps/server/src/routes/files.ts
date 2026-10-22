@@ -21,7 +21,13 @@ function requiredPath(request: { query: unknown }): string {
 }
 
 export function registerFileRoutes(app: FastifyInstance, services: Services): void {
-  const cwdOf = (id: string) => services.sessions.get(id).cwd;
+  const cwdOf = (id: string): string => {
+    const session = services.sessions.get(id);
+    if (services.projects.get(session.projectId).location.kind === "ssh") {
+      throw httpError(501, "remote files are not supported yet");
+    }
+    return session.cwd;
+  };
   const notifyChange = (projectId: string) => {
     services.bus.publish({ type: "git.status_changed", projectId });
   };

@@ -1,5 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { api } from "../api/client";
 import { useUi } from "../state/store";
 import { useUploads, type UploadTask } from "../state/uploads";
 import { isTypingTarget } from "../util/dom";
@@ -35,9 +36,18 @@ export function UploadManager() {
   const selectedSessionId = useUi((state) => state.selectedSessionId);
   const tasks = useUploads((state) => state.tasks);
   const queryClient = useQueryClient();
+  const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: api.sessions.list });
+  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: api.projects.list });
+  const selectedSession = sessionsQuery.data?.sessions.find(
+    (item) => item.session.id === selectedSessionId,
+  );
+  const selectedProject = projectsQuery.data?.find(
+    (project) => project.id === selectedSession?.session.projectId,
+  );
+  const localSession = selectedProject?.location.kind === "local";
 
   useEffect(() => {
-    if (!selectedSessionId) return;
+    if (!selectedSessionId || !localSession) return;
     const start = (files: File[]) => {
       useUploads.getState().start({
         sessionId: selectedSessionId,
@@ -74,7 +84,7 @@ export function UploadManager() {
       window.removeEventListener("paste", onPaste);
       window.removeEventListener("paste", onPasteCapture, true);
     };
-  }, [selectedSessionId, queryClient]);
+  }, [selectedSessionId, localSession, queryClient]);
 
   const current = tasks[0];
   const rest = tasks.length - 1;
@@ -95,7 +105,7 @@ export function UploadManager() {
           <span>{pillLabel(current)}</span>
         </div>
       )}
-      <SendPathModal />
+      {localSession && <SendPathModal />}
     </>
   );
 }

@@ -1,8 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { SessionWithRuntime } from "@shellboard/contracts";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, type ShellboardSessionWithRuntime } from "../../api/client";
 import { IconAttach, IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconNewLine, IconPaste, IconSearch } from "../../components/icons";
 import { SendConfirmModal } from "../../components/SendConfirm";
 import { toast } from "../../state/toasts";
@@ -22,13 +21,16 @@ const STATUS_BANNER: Partial<Record<TerminalStatus, string>> = {
 export function TerminalView({
   data,
   variant,
+  allowUploads,
   mobileActionsTarget,
 }: {
-  data: SessionWithRuntime;
+  data: ShellboardSessionWithRuntime;
   variant: "agent" | "tool";
+  allowUploads?: boolean;
   mobileActionsTarget?: HTMLElement | null;
 }) {
   const { session, runtime } = data;
+  const uploadsEnabled = allowUploads ?? true;
   const terminal = useTerminalWs(
     variant === "agent"
       ? `/api/sessions/${session.id}/terminal`
@@ -45,7 +47,11 @@ export function TerminalView({
   const openDiff = useUi((state) => state.openDiff);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const queryClient = useQueryClient();
-  const exited = variant === "agent" && runtime.activity === "exited";
+  const exited =
+    variant === "agent" &&
+    runtime.activity === "exited" &&
+    (runtime.transport === "local" || runtime.alive);
+  const sshDisconnected = variant === "agent" && runtime.transport === "disconnected";
 
   useEffect(() => {
     if (!menu) return;
@@ -104,18 +110,31 @@ export function TerminalView({
 
   const restart = async () => {
     try {
-      await api.sessions.restart(session.id);
-      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      const restarted = await api.sessions.restart(session.id);
+      queryClient.setQueryData<{ sessions: ShellboardSessionWithRuntime[] }>(
+        ["sessions"],
+        (current) => ({
+          sessions: [
+            ...(current?.sessions ?? []).filter(
+              (item) => item.session.id !== restarted.session.id,
+            ),
+            restarted,
+          ],
+        }),
+      );
       terminal.reconnect();
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
     } catch (err) {
       toast(err instanceof ApiError ? err.message : "restart failed", "error");
     }
   };
 
   const banner =
-    variant === "agent" && exited
-      ? "session exited"
-      : STATUS_BANNER[terminal.status];
+    sshDisconnected
+      ? "SSH disconnected"
+      : variant === "agent" && exited
+        ? "session exited"
+        : STATUS_BANNER[terminal.status];
   // The dialog reports the exact payload. The preview carries line 1, so the
   // remainder is everything the user cannot see yet — and it is zero when the
   // first line was nothing but control characters.
@@ -125,7 +144,7 @@ export function TerminalView({
   const mobileActionsPortaled = mobileAgentHeaderMerged && !!mobileActionsTarget;
   const mobileActions = (
     <>
-      {variant === "agent" && (
+      {variant === "agent" && uploadsEnabled && (
         <button
           type="button"
           className="icon-btn"
@@ -240,7 +259,7 @@ export function TerminalView({
         </div>
       </div>}
 
-      {isMobile && variant === "agent" && (
+      {isMobile && variant === "agent" && uploadsEnabled && (
         <input
           ref={fileInputRef}
           type="file"
@@ -309,11 +328,16 @@ export function TerminalView({
       )}
 
       {banner && (
-        <div className={`terminal-banner ${exited ? "ended" : terminal.status}`}>
-          <span>{banner}</span>
-          {variant === "agent" && exited && (
-            <button type="button" className="btn primary" onClick={() => void restart()}>
-              Restart
+        <div className={`terminal-banner ${exited || sshDisconnected ? "ended" : terminal.status}`}>
+          <span>{sshDisconnected ? "SSH disconnected; restarting starts a new agent command." : banner}</span>
+          {variant === "agent" && (exited || sshDisconnected) && (
+            <button
+              type="button"
+              className="btn primary"
+              title="Start a new agent command; the previous process cannot be reattached."
+              onClick={() => void restart()}
+            >
+              Restart with new command
             </button>
           )}
           {(terminal.status === "reconnecting" || terminal.status === "taken-over") && (

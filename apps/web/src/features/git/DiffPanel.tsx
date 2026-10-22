@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
-import type { SessionWithRuntime } from "@shellboard/contracts";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, type ShellboardSessionWithRuntime } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { useUi } from "../../state/store";
 import { toast } from "../../state/toasts";
@@ -141,7 +140,7 @@ function treeEntries(rows: FileRow[], collapsed: Set<string>): TreeEntry[] {
   return out;
 }
 
-export function DiffPanel({ data }: { data: SessionWithRuntime }) {
+export function DiffPanel({ data }: { data: ShellboardSessionWithRuntime }) {
   const id = data.session.id;
   const queryClient = useQueryClient();
   const [treeMode, setTreeMode] = useState(false);

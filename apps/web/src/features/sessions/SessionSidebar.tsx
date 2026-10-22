@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type { Project, SessionWithRuntime } from "@shellboard/contracts";
-import { ApiError, api } from "../../api/client";
+import {
+  ApiError,
+  api,
+  type SessionTransport,
+  type ShellboardProject,
+  type ShellboardSessionWithRuntime,
+} from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { CreateProjectDialog } from "../projects/CreateProjectDialog";
 import { CreateSessionDialog } from "./CreateSessionDialog";
@@ -27,10 +32,34 @@ function useTick(ms: number): number {
   return 0;
 }
 
-function SessionBranch({ sessionId }: { sessionId: string }) {
+function projectLocationLabel(project: ShellboardProject): string {
+  if (project.location.kind === "ssh") {
+    return `SSH · ${project.location.username}@${project.location.host}:${project.location.port}`;
+  }
+  return "local";
+}
+
+function transportLabel(transport: SessionTransport | undefined, remote: boolean): string | null {
+  if (!remote) return null;
+  switch (transport) {
+    case "connecting":
+      return "SSH connecting";
+    case "connected":
+      return "SSH active";
+    case "disconnected":
+      return "SSH disconnected";
+    case "unknown":
+      return "Remote state unknown";
+    default:
+      return null;
+  }
+}
+
+function SessionBranch({ sessionId, enabled }: { sessionId: string; enabled: boolean }) {
   const query = useQuery({
     queryKey: ["git", "status", sessionId],
     queryFn: () => api.git.status(sessionId),
+    enabled,
     staleTime: 60_000,
     retry: 0,
     // One git subprocess per session row per focus adds up; the 60s staleTime
@@ -43,26 +72,30 @@ function SessionBranch({ sessionId }: { sessionId: string }) {
 interface MenuState {
   x: number;
   y: number;
-  session: SessionWithRuntime;
+  session: ShellboardSessionWithRuntime;
 }
 
 interface RenameState {
-  session: SessionWithRuntime;
+  session: ShellboardSessionWithRuntime;
   value: string;
 }
 
 function SessionItem({
   item,
+  project,
   selected,
   menuOpen,
   onMenu,
 }: {
-  item: SessionWithRuntime;
+  item: ShellboardSessionWithRuntime;
+  project: ShellboardProject;
   selected: boolean;
   menuOpen: boolean;
   onMenu: (menu: MenuState | null) => void;
 }) {
   const selectSession = useUi((state) => state.selectSession);
+  const disconnected = item.runtime.transport === "disconnected";
+  const status = transportLabel(item.runtime.transport, project.location.kind === "ssh");
   return (
     <div className={selected ? "session-row selected" : "session-row"}>
       <button
@@ -82,12 +115,24 @@ function SessionItem({
           onMenu({ x: rect.left, y: rect.bottom, session: item });
         }}
       >
-        <span className={`act-dot ${item.runtime.activity}`} title={item.runtime.activity} />
+        <span
+          className={disconnected ? "act-dot transport-disconnected" : `act-dot ${item.runtime.activity}`}
+          title={status ?? item.runtime.activity}
+          aria-label={status ?? item.runtime.activity}
+        />
         <span className="text">
           <span className="name">{item.session.name}</span>
           <span className="meta">
-            {AGENT_LABEL[item.session.agentType]} · <SessionBranch sessionId={item.session.id} /> ·{" "}
-            {relativeTime(item.runtime.lastActivityAt)}
+            {AGENT_LABEL[item.session.agentType]} · {projectLocationLabel(project)} ·{" "}
+            <SessionBranch
+              sessionId={item.session.id}
+              enabled={project.location.kind === "local"}
+            /> · {relativeTime(item.runtime.lastActivityAt)}
+            {status && (
+              <span className={disconnected ? "transport-label disconnected" : "transport-label"}>
+                {status}
+              </span>
+            )}
           </span>
         </span>
       </button>
@@ -127,10 +172,11 @@ export function SessionSidebar() {
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [rename, setRename] = useState<RenameState | null>(null);
-  const [confirmKill, setConfirmKill] = useState<SessionWithRuntime | null>(null);
+  const [confirmKill, setConfirmKill] = useState<ShellboardSessionWithRuntime | null>(null);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
-  const [createSessionFor, setCreateSessionFor] = useState<Project | null>(null);
-  const [confirmDeleteProject, setConfirmDeleteProject] = useState<Project | null>(null);
+  const [createSessionFor, setCreateSessionFor] = useState<ShellboardProject | null>(null);
+  const [editProject, setEditProject] = useState<ShellboardProject | null>(null);
+  const [confirmDeleteProject, setConfirmDeleteProject] = useState<ShellboardProject | null>(null);
 
   const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: api.sessions.list });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: api.projects.list });
@@ -142,7 +188,25 @@ export function SessionSidebar() {
   });
   const restart = useMutation({
     mutationFn: (id: string) => api.sessions.restart(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["sessions"] }),
+    onSuccess: (restarted) => {
+      queryClient.setQueryData<{ sessions: ShellboardSessionWithRuntime[] }>(
+        ["sessions"],
+        (current) => ({
+          sessions: [
+            ...(current?.sessions ?? []).filter(
+              (item) => item.session.id !== restarted.session.id,
+            ),
+            restarted,
+          ],
+        }),
+      );
+      const ui = useUi.getState();
+      if (ui.selectedSessionId !== restarted.session.id) {
+        ui.selectSession(restarted.session.id);
+      }
+      ui.bumpTerminalEpoch();
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
     onError: (err) => toast(err instanceof ApiError ? err.message : "restart failed", "error"),
   });
   const renameMutation = useMutation({
@@ -198,7 +262,7 @@ export function SessionSidebar() {
       sessions.some((item) => item.session.name.toLowerCase().includes(filter))
     );
   });
-  const sessionsFor = (projectId: string): SessionWithRuntime[] =>
+  const sessionsFor = (projectId: string): ShellboardSessionWithRuntime[] =>
     (sessionsQuery.data?.sessions ?? []).filter((item) => item.session.projectId === projectId);
 
   const toggleProject = (projectId: string) => {
@@ -251,7 +315,7 @@ export function SessionSidebar() {
                 role="button"
                 tabIndex={0}
                 aria-expanded={!collapsed}
-                title={project.rootPath}
+                title={`${projectLocationLabel(project)} · ${project.rootPath}`}
                 onClick={() => toggleProject(project.id)}
                 onKeyDown={(event) => {
                   if (event.key !== "Enter" && event.key !== " ") return;
@@ -264,6 +328,7 @@ export function SessionSidebar() {
               >
                 <span className={collapsed ? "chevron" : "chevron open"}>▸</span>
                 <span className="name">{project.name}</span>
+                <span className="project-location">{projectLocationLabel(project)}</span>
                 <span className="spacer" />
                 <button
                   type="button"
@@ -279,6 +344,17 @@ export function SessionSidebar() {
                 {/* Hidden until the row is hovered or focused: a destructive
                     action is never one misclick away. */}
                 <span className="row-actions">
+                  <button
+                    type="button"
+                    title="Edit project"
+                    aria-label={`Edit ${project.name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setEditProject(project);
+                    }}
+                  >
+                    ✎
+                  </button>
                   <button
                     type="button"
                     title="Delete project"
@@ -297,6 +373,7 @@ export function SessionSidebar() {
                   <SessionItem
                     key={item.session.id}
                     item={item}
+                    project={project}
                     selected={item.session.id === selectedSessionId}
                     menuOpen={menu?.session.session.id === item.session.id}
                     onMenu={setMenu}
@@ -330,7 +407,7 @@ export function SessionSidebar() {
               setMenu(null);
             }}
           >
-            Restart
+            Restart with new command
           </button>
           <button
             type="button"
@@ -388,8 +465,19 @@ export function SessionSidebar() {
       {confirmKill && (
         <Modal title="Kill session" onClose={() => setConfirmKill(null)}>
           <div>
-            Kill <strong>{confirmKill.session.name}</strong>? The tmux session and its agent
-            process will be terminated.
+            {projectsQuery.data?.find((project) => project.id === confirmKill.session.projectId)
+              ?.location.kind === "ssh" ? (
+              <>
+                Kill <strong>{confirmKill.session.name}</strong>? This closes the local tmux
+                session and its SSH connection. A remote process that detached from its terminal
+                may keep running.
+              </>
+            ) : (
+              <>
+                Kill <strong>{confirmKill.session.name}</strong>? The tmux session and its agent
+                process will be terminated.
+              </>
+            )}
           </div>
           <div className="modal-actions">
             <button type="button" onClick={() => setConfirmKill(null)}>
@@ -445,6 +533,13 @@ export function SessionSidebar() {
         <CreateProjectDialog
           onClose={() => setCreateProjectOpen(false)}
           onCreated={(project) => setCreateSessionFor(project)}
+        />
+      )}
+      {editProject && (
+        <CreateProjectDialog
+          project={editProject}
+          onClose={() => setEditProject(null)}
+          onUpdated={() => setEditProject(null)}
         />
       )}
       {createSessionFor && (

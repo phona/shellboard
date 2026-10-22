@@ -40,11 +40,23 @@ export class ActivityObserver {
     this.ticking = true;
     try {
       const sessions = this.db
-        .prepare("SELECT id, tmux_name FROM sessions")
-        .all() as Array<{ id: string; tmux_name: string }>;
-      const infos = await this.tmux.listSessions();
+        .prepare(
+          "SELECT sessions.id, sessions.tmux_name, projects.location FROM sessions JOIN projects ON projects.id = sessions.project_id",
+        )
+        .all() as Array<{ id: string; tmux_name: string; location: string }>;
+      const result = await this.tmux.listSessionsResult();
+      if (!result.ok) {
+        for (const row of sessions) {
+          this.tracker.markUnknown(row.id, row.location === "ssh");
+        }
+        return;
+      }
       for (const row of sessions) {
-        this.tracker.observe(row.id, infos.get(row.tmux_name) ?? null);
+        this.tracker.observe(
+          row.id,
+          result.sessions.get(row.tmux_name) ?? null,
+          row.location === "ssh",
+        );
       }
     } catch (err) {
       // start() fires this with `void`, so a throw here would surface as an

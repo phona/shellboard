@@ -12,15 +12,15 @@ export function registerProjectRoutes(app: FastifyInstance, services: Services):
   });
 
   app.post("/api/projects", async (request, reply) => {
-    const project = services.projects.create(
-      parseBody(CreateProjectInputSchema, request.body),
-    );
+    const input = parseBody(CreateProjectInputSchema, request.body);
+    const project = services.projects.create(input);
     return reply.code(201).send(project);
   });
 
   app.patch("/api/projects/:id", async (request) => {
     const id = paramId(request);
-    return services.projects.update(id, parseBody(UpdateProjectInputSchema, request.body));
+    const input = parseBody(UpdateProjectInputSchema, request.body);
+    return services.projects.update(id, input);
   });
 
   app.delete("/api/projects/:id", async (request) => {

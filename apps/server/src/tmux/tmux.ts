@@ -6,6 +6,19 @@ export interface TmuxSessionInfo {
   name: string;
   activitySeconds: number | null;
   attached: number;
+  /** A remote SSH pane is retained after the process exits so the UI can
+      report the disconnected transport and offer Restart. */
+  paneDead?: boolean;
+  paneExitStatus?: number | null;
+}
+
+export interface TmuxListResult {
+  sessions: Map<string, TmuxSessionInfo>;
+  ok: boolean;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 /** `new-session -e` pairs for a launch environment, sorted so the command line
@@ -28,6 +41,10 @@ export class TmuxService {
   }
 
   async listSessions(): Promise<Map<string, TmuxSessionInfo>> {
+    return (await this.listSessionsResult()).sessions;
+  }
+
+  async listSessionsResult(): Promise<TmuxListResult> {
     // window_activity, not session_activity: the session stamp is frozen at
     // creation for single-window sessions (its alert pipeline ignores the
     // active window), while window_activity ticks with every pane output.
@@ -35,9 +52,10 @@ export class TmuxService {
     const result = await execa(
       "tmux",
       this.args(
-        "list-sessions",
+        "list-panes",
+        "-a",
         "-F",
-        "#{session_name}|#{window_activity}|#{session_attached}",
+        "#{session_name}|#{window_activity}|#{session_attached}|#{pane_dead}|#{pane_dead_status}",
       ),
       {
         reject: false,
@@ -49,22 +67,26 @@ export class TmuxService {
       },
     );
     const map = new Map<string, TmuxSessionInfo>();
-    if (result.failed) return map;
+    if (result.failed) return { sessions: map, ok: false };
     for (const line of result.stdout.split("\n")) {
       const parts = line.split("|");
       const name = parts[0];
       if (!name) continue;
       const raw = Number(parts[1]);
       const attached = Number(parts[2]);
+      const paneDead = parts[3] === "1";
+      const exitStatus = Number(parts[4]);
       map.set(name, {
         name,
         activitySeconds: Number.isFinite(raw)
           ? Math.max(0, Date.now() / 1000 - raw)
           : null,
         attached: Number.isFinite(attached) ? attached : 0,
+        paneDead,
+        paneExitStatus: Number.isFinite(exitStatus) && exitStatus >= 0 ? exitStatus : null,
       });
     }
-    return map;
+    return { sessions: map, ok: true };
   }
 
   async sessionExists(name: string): Promise<boolean> {
@@ -103,7 +125,13 @@ export class TmuxService {
    * involved. Requires tmux >= 3.3 (`-e` for new-session); an empty map emits
    * no flags and leaves the invocation byte-identical to before.
    */
-  async newSession(name: string, cwd: string, command: string[], env: EnvVarMap = {}): Promise<void> {
+  async newSession(
+    name: string,
+    cwd: string,
+    command: string[],
+    env: EnvVarMap = {},
+    options: { remainOnExit?: boolean } = {},
+  ): Promise<void> {
     // One invocation, three commands: boot the server (no-op if running),
     // raise the global history-limit, then create the session. history-limit
     // is a window option read when the pane is created — setting it after
@@ -112,30 +140,41 @@ export class TmuxService {
     // silently caps both the D5 scrollback and the D7 seed. Splitting these
     // into separate execa calls races a just-booted server ("no server
     // running"), hence the single command line.
-    await execa(
-      "tmux",
-      this.args(
-        "-f",
-        "/dev/null",
-        "start-server",
-        ";",
-        "set-option",
-        "-g",
-        "history-limit",
-        "50000",
-        ";",
-        "new-session",
-        "-d",
-        "-s",
-        name,
-        "-c",
-        cwd,
-        ...envArgs(env),
-        ...command,
-      ),
+    // Set remain-on-exit on this pane before SSH starts, so an immediate
+    // connection failure cannot destroy the tmux session. Avoid changing the
+    // dedicated server's global window default for other sessions.
+    const launchCommand = options.remainOnExit
+      ? [
+          "sh",
+          "-c",
+          'tmux set-window-option -t "$TMUX_PANE" remain-on-exit on && exec "$@"',
+          "shellboard-remote-launch",
+          ...command,
+        ]
+      : command;
+    const launch = launchCommand.map(shellQuote).join(" ");
+    const args = this.args(
+      "-f",
+      "/dev/null",
+      "start-server",
+      ";",
+      "set-option",
+      "-g",
+      "history-limit",
+      "50000",
+      ";",
+      "new-session",
+      "-d",
+      "-s",
+      name,
+      "-c",
+      cwd,
+      ...envArgs(env),
+      launch,
     );
+    await execa("tmux", args);
     try {
-      await this.applySessionOptions(name);
+      await this.applySessionOptions(name, options);
     } catch (err) {
       // The session exists but is unconfigured and unknown to the DB: an
       // orphan agent on the shellboard socket that nothing can list, kill,
@@ -156,11 +195,23 @@ export class TmuxService {
    * - set-clipboard + Ms override: tmux copy commands and inner CLIs still
    *   push to the browser clipboard via OSC 52.
    */
-  async applySessionOptions(name: string): Promise<void> {
+  async applySessionOptions(name: string, options: { remainOnExit?: boolean } = {}): Promise<void> {
     await execa("tmux", this.args("set-option", "-t", name, "monitor-activity", "on"));
     await execa("tmux", this.args("set-option", "-t", name, "status", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "mouse", "off"));
     await execa("tmux", this.args("set-option", "-t", name, "set-clipboard", "on"));
+    if (options.remainOnExit !== undefined) {
+      await execa(
+        "tmux",
+        this.args(
+          "set-window-option",
+          "-t",
+          name,
+          "remain-on-exit",
+          options.remainOnExit ? "on" : "off",
+        ),
+      );
+    }
     // Web-first sizing: with the default `latest`, the pane follows the
     // most recently active tmux client, so a plain terminal attached to
     // the same session keeps stealing the window size from the browser

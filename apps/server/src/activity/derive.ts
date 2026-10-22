@@ -11,7 +11,7 @@ export interface ActivityDerivation {
  * monitored output). Imprecision is accepted by design — this is a UI hint.
  */
 export function deriveActivity(info: TmuxSessionInfo | null): ActivityDerivation {
-  if (!info) return { activity: "exited", lastActivityAt: null };
+  if (!info || info.paneDead) return { activity: "exited", lastActivityAt: null };
   const seconds = info.activitySeconds;
   if (seconds === null) return { activity: "idle", lastActivityAt: null };
   const lastActivityAt = Date.now() - seconds * 1000;

@@ -67,12 +67,14 @@ export class TerminalBridge {
   private readonly socket: string;
   private readonly tracker: ActivityTracker;
   private readonly tmux: TmuxService;
+  private readonly localRuntimeCwd: string;
   private readonly clients = new Map<string, AttachedClient>();
 
-  constructor(socket: string, tracker: ActivityTracker, tmux: TmuxService) {
+  constructor(socket: string, tracker: ActivityTracker, tmux: TmuxService, localRuntimeCwd: string) {
     this.socket = socket;
     this.tracker = tracker;
     this.tmux = tmux;
+    this.localRuntimeCwd = localRuntimeCwd;
   }
 
   attach(ws: WebSocket, session: Session): void {
@@ -95,7 +97,9 @@ export class TerminalBridge {
         name: "xterm-256color",
         cols: 80,
         rows: 24,
-        cwd: session.cwd,
+        // Remote sessions store a target-machine path in session.cwd. The
+        // local tmux attach client must always start from a local directory.
+        cwd: this.localRuntimeCwd,
         env: processEnv(),
         // Terminal bytes are opaque (architecture red line): without this,
         // node-pty decodes the pty stream as UTF-8 and every invalid byte

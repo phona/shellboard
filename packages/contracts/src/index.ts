@@ -124,10 +124,62 @@ export type UpdateCommandInput = z.infer<typeof UpdateCommandInputSchema>;
 export const ActivitySchema = z.enum(["working", "cooling", "idle", "exited"]);
 export type Activity = z.infer<typeof ActivitySchema>;
 
+/** Explicit SSH destination fields are stored instead of an OpenSSH config
+    alias. Shell metacharacters are not meaningful in these values. */
+export const SshHostSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((value) => !/[\s\u0000-\u001f\u007f]/.test(value), "invalid SSH host")
+  .refine((value) => !value.startsWith("-"), "SSH host must not start with '-'");
+
+export const SshUsernameSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((value) => !/[\s\u0000-\u001f\u007f]/.test(value), "invalid SSH username");
+
+export const SshAuthSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("key"),
+    /** Path on the Shellboard server; key bytes never enter the DTO/DB. */
+    identityFile: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "invalid identity file path")
+      .optional(),
+  }),
+  z.object({ kind: z.literal("password-prompt") }),
+]);
+export type SshAuth = z.infer<typeof SshAuthSchema>;
+
+export const ProjectLocationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("local") }),
+  z.object({
+    kind: z.literal("ssh"),
+    host: SshHostSchema,
+    port: z.number().int().min(1).max(65535),
+    username: SshUsernameSchema,
+    auth: SshAuthSchema,
+  }),
+]);
+export type ProjectLocation = z.infer<typeof ProjectLocationSchema>;
+
+export const SessionTransportSchema = z.enum([
+  "local",
+  "connecting",
+  "connected",
+  "disconnected",
+  "unknown",
+]);
+export type SessionTransport = z.infer<typeof SessionTransportSchema>;
+
 export const ProjectSchema = z.object({
   id: z.string(),
   name: z.string(),
   rootPath: z.string(),
+  location: ProjectLocationSchema,
   createdAt: z.string(),
 });
 export type Project = z.infer<typeof ProjectSchema>;
@@ -153,6 +205,7 @@ export const SessionRuntimeSchema = z.object({
   attachedClients: z.number().int().min(0).max(1),
   lastActivityAt: z.number().nullable(),
   activity: ActivitySchema,
+  transport: SessionTransportSchema,
 });
 export type SessionRuntime = z.infer<typeof SessionRuntimeSchema>;
 
@@ -297,12 +350,14 @@ export type WsEvent = z.infer<typeof WsEventSchema>;
 export const CreateProjectInputSchema = z.object({
   name: z.string().min(1),
   rootPath: z.string().min(1),
+  location: ProjectLocationSchema.optional(),
 });
 export type CreateProjectInput = z.infer<typeof CreateProjectInputSchema>;
 
 export const UpdateProjectInputSchema = z.object({
   name: z.string().min(1).optional(),
   rootPath: z.string().min(1).optional(),
+  location: ProjectLocationSchema.optional(),
 });
 export type UpdateProjectInput = z.infer<typeof UpdateProjectInputSchema>;
 

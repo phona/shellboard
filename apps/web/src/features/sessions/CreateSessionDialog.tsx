@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { AGENT_PRESETS } from "@shellboard/contracts";
-import type { AgentType, Project } from "@shellboard/contracts";
-import { ApiError, api } from "../../api/client";
+import type { AgentType, SessionWithRuntime } from "@shellboard/contracts";
+import { ApiError, api, type ShellboardProject } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { EnvEditor } from "../../components/EnvEditor";
 import { useCommands } from "../../state/useCommands";
@@ -14,14 +14,23 @@ export function CreateSessionDialog({
   project,
   onClose,
 }: {
-  project: Project;
+  project: ShellboardProject;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: api.sessions.list });
   const commandsQuery = useCommands();
   const registeredCommands = commandsQuery.data ?? [];
-  const [name, setName] = useState("");
+  /** Keep the suggested name stable while activity events update session data. */
+  const [generated] = useState(() => {
+    const taken = new Set(
+      (sessionsQuery.data?.sessions ?? [])
+        .filter((item) => item.session.projectId === project.id)
+        .map((item) => item.session.name),
+    );
+    return codename(taken);
+  });
+  const [name, setName] = useState(generated);
   const [agentType, setAgentType] = useState<AgentType>("codex");
   const [cwd, setCwd] = useState("");
   const [command, setCommand] = useState("");
@@ -36,20 +45,6 @@ export function CreateSessionDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  /**
-   * Auto-naming: an empty name becomes a codename (adjective-noun) that is
-   * not taken within the project. Stable while the dialog is open — it only
-   * recomputes when the session list changes.
-   */
-  const generated = useMemo(() => {
-    const taken = new Set(
-      (sessionsQuery.data?.sessions ?? [])
-        .filter((item) => item.session.projectId === project.id)
-        .map((item) => item.session.name),
-    );
-    return codename(taken);
-  }, [sessionsQuery.data, project.id]);
-
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -63,9 +58,20 @@ export function CreateSessionDialog({
         command: agentType === "custom" ? command : undefined,
         env: pairsToRecord(env),
       });
-      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      queryClient.setQueryData<{ sessions: SessionWithRuntime[] }>(
+        ["sessions"],
+        (current) => ({
+          sessions: [
+            ...(current?.sessions ?? []).filter(
+              (item) => item.session.id !== created.session.id,
+            ),
+            created,
+          ],
+        }),
+      );
       useUi.getState().selectSession(created.session.id);
       onClose();
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "create failed");
     } finally {

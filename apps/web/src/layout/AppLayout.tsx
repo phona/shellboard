@@ -71,6 +71,7 @@ const TABS: ReadonlyArray<{ id: RightTab; label: string }> = [
 
 export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
   const selectedSessionId = useUi((state) => state.selectedSessionId);
+  const terminalEpoch = useUi((state) => state.terminalEpoch);
   const openDiff = useUi((state) => state.openDiff);
   const rightTab = useUi((state) => state.rightTab);
   const leftCollapsed = useUi((state) => state.leftCollapsed);
@@ -111,13 +112,18 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
     queryFn: api.sessions.list,
     refetchInterval: 15000,
   });
+  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: api.projects.list });
   const sessions = sessionsQuery.data?.sessions ?? [];
   const selected = sessions.find((item) => item.session.id === selectedSessionId) ?? null;
+  const selectedProject = projectsQuery.data?.find(
+    (project) => project.id === selected?.session.projectId,
+  );
+  const remoteProject = selectedProject?.location.kind === "ssh";
 
   const statusQuery = useQuery({
     queryKey: ["git", "status", selectedSessionId],
     queryFn: () => api.git.status(selectedSessionId ?? ""),
-    enabled: selectedSessionId !== null,
+    enabled: selected !== null && selectedProject?.location.kind === "local",
     refetchInterval: 15000,
   });
 
@@ -128,10 +134,15 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
   }, [selectedSessionId, sessions]);
 
   useEffect(() => {
-    if (selectedSessionId && !selected && sessionsQuery.isSuccess) {
+    if (
+      selectedSessionId &&
+      !selected &&
+      sessionsQuery.isSuccess &&
+      !sessionsQuery.isFetching
+    ) {
       useUi.getState().selectSession(null);
     }
-  }, [selectedSessionId, selected, sessionsQuery.isSuccess]);
+  }, [selectedSessionId, selected, sessionsQuery.isSuccess, sessionsQuery.isFetching]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -373,9 +384,10 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
       <div className={openDiff ? "terminal-slot hidden" : "terminal-slot"}>
         <ErrorBoundary>
           <TerminalView
-            key={selected.session.id}
+            key={`${selected.session.id}:${terminalEpoch}`}
             data={selected}
             variant="agent"
+            allowUploads={!remoteProject}
             mobileActionsTarget={mobileTerminalActionsTarget}
           />
         </ErrorBoundary>
@@ -400,7 +412,14 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
     </div>
   );
 
-  const toolContent = selected ? (
+  const toolContent = selected && !selectedProject ? (
+    <div className="tool-placeholder">Loading project…</div>
+  ) : selected && remoteProject ? (
+    <div className="tool-placeholder">
+      <strong>Remote tools unavailable</strong>
+      <span>Git, Files, Tool Terminal, and Uploads are not supported for this project yet.</span>
+    </div>
+  ) : selected ? (
     <ErrorBoundary>
       {rightTab === "diff" ? (
         <DiffPanel key={selected.session.id} data={selected} />
@@ -574,6 +593,8 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
                     key={tab.id}
                     type="button"
                     className={rightTab === tab.id ? "tool-tab active" : "tool-tab"}
+                    disabled={remoteProject}
+                    title={remoteProject ? "Remote tools are not supported yet" : undefined}
                     onClick={() => useUi.getState().setRightTab(tab.id)}
                   >
                     {tab.label}
@@ -665,6 +686,8 @@ export function AppLayout({ sidebar }: { sidebar: ReactNode }) {
                 key={tab.id}
                 type="button"
                 className={rightTab === tab.id ? "tool-tab active" : "tool-tab"}
+                disabled={remoteProject}
+                title={remoteProject ? "Remote tools are not supported yet" : undefined}
                 onClick={() => useUi.getState().setRightTab(tab.id)}
               >
                 {tab.label}

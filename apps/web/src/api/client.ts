@@ -14,8 +14,11 @@ import type {
   Project,
   SaveFileInput,
   Session,
+  SessionRuntime,
   SessionWithRuntime,
+  SshAuth,
   UpdateCommandInput,
+  UpdateProjectInput,
   UploadList,
 } from "@shellboard/contracts";
 import { formatSize } from "../util/format.js";
@@ -29,6 +32,14 @@ export class ApiError extends Error {
     this.status = status;
   }
 }
+
+export type ProjectAuth = SshAuth;
+export type ProjectLocation = Project["location"];
+export type ShellboardProject = Project;
+export type SessionTransport = SessionRuntime["transport"];
+export type ShellboardSessionWithRuntime = SessionWithRuntime;
+export type CreateProjectRequest = CreateProjectInput;
+export type UpdateProjectRequest = UpdateProjectInput;
 
 async function http<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
   const { json, ...rest } = init ?? {};
@@ -77,9 +88,11 @@ export const api = {
       http<{ ok: boolean }>("/api/auth/login", { method: "POST", json: { token } }),
   },
   projects: {
-    list: () => http<Project[]>("/api/projects"),
-    create: (input: CreateProjectInput) =>
-      http<Project>("/api/projects", { method: "POST", json: input }),
+    list: () => http<ShellboardProject[]>("/api/projects"),
+    create: (input: CreateProjectRequest) =>
+      http<ShellboardProject>("/api/projects", { method: "POST", json: input }),
+    update: (id: string, input: UpdateProjectRequest) =>
+      http<ShellboardProject>(`/api/projects/${id}`, { method: "PATCH", json: input }),
     remove: (id: string) =>
       http<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
   },

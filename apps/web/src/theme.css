@@ -393,6 +393,18 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.project-location {
+  flex: none;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 400;
+}
+
 /* Project row actions follow the file/diff row pattern: hidden until the row
    is hovered or focused, so a destructive action is never one misclick away. */
 .project-head .row-actions {
@@ -543,6 +555,31 @@ button:focus-visible {
   color: var(--danger);
   font-size: 14px;
   font-weight: 700;
+}
+
+.act-dot.transport-disconnected {
+  background: transparent;
+  border: none;
+}
+
+.act-dot.transport-disconnected::before {
+  content: "×";
+  position: absolute;
+  top: -6px;
+  left: 0;
+  color: var(--danger);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.transport-label {
+  margin-left: 6px;
+  color: var(--text-muted);
+}
+
+.transport-label.disconnected {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 /* Motion sensitivity: the only animation in the app is the activity pulse.
@@ -1002,6 +1039,8 @@ button:focus-visible {
 .tool-placeholder {
   flex: 1;
   display: flex;
+  flex-direction: column;
+  gap: 6px;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
@@ -1602,6 +1641,73 @@ button:focus-visible {
   gap: 4px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.location-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.location-fieldset legend {
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.location-toggle {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.location-toggle label {
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.location-toggle label:hover {
+  background: var(--surface-hover);
+}
+
+.location-toggle label.selected {
+  border-color: var(--accent);
+  background: var(--surface-selected);
+  color: var(--accent);
+}
+
+.location-toggle input[type="radio"] {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.form-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.35fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.remote-shell-note {
+  padding: 6px 8px;
+  border-left: 2px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .modal-body input,

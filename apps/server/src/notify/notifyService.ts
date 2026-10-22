@@ -147,6 +147,7 @@ export class NotifyService {
    * `session.notify` event the web UI receives, written to stdin.
    */
   private runHooks(event: NotifyEvent): Promise<void> {
+    if (event.session && this.sessions.isRemote(event.session.id)) return Promise.resolve();
     const dir = this.config.notifyHooksDir;
     return (async () => {
       let names: string[];

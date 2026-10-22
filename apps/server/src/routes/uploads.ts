@@ -15,13 +15,20 @@ export function registerUploadRoutes(app: FastifyInstance, services: Services): 
     if (body.length === 0) throw httpError(400, "empty upload");
     return body;
   };
+  const localSession = (id: string) => {
+    const session = services.sessions.get(id);
+    if (services.projects.get(session.projectId).location.kind === "ssh") {
+      throw httpError(501, "remote uploads are not supported yet");
+    }
+    return session;
+  };
 
   app.post(
     "/api/sessions/:id/uploads",
     { bodyLimit: MAX_UPLOAD_BYTES },
     async (request, reply) => {
       const id = paramId(request);
-      services.sessions.get(id);
+      localSession(id);
       const { name } = parseQuery(UploadQuerySchema, queryString(request));
       const entry = services.uploads.upload(id, name, binaryBody(request.body));
       return reply.code(201).send(entry);
@@ -29,11 +36,13 @@ export function registerUploadRoutes(app: FastifyInstance, services: Services): 
   );
 
   app.get("/api/sessions/:id/uploads", async (request) => {
+    localSession(paramId(request));
     return services.uploads.list(paramId(request));
   });
 
   app.delete("/api/sessions/:id/uploads", async (request) => {
     const id = paramId(request);
+    localSession(id);
     const { name } = parseQuery(UploadQuerySchema, queryString(request));
     services.uploads.remove(id, name);
     return { ok: true };
@@ -43,7 +52,7 @@ export function registerUploadRoutes(app: FastifyInstance, services: Services): 
     const id = paramId(request);
     const { name } = parseBody(SendUploadInputSchema, request.body);
     const absolute = services.uploads.absolutePath(id, name);
-    const session = services.sessions.get(id);
+    const session = localSession(id);
     await services.tmux.sendText(session.tmuxName, absolute);
     return { ok: true };
   });

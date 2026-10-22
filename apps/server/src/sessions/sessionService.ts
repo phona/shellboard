@@ -18,6 +18,8 @@ import type { ActivityTracker } from "../activity/tracker.js";
 import type { EventBus } from "../events/bus.js";
 import type { ProjectService } from "../projects/projectService.js";
 import type { UploadService } from "../uploads/uploadService.js";
+import { isWindowsAbsolutePath } from "../ssh/ssh.js";
+import type { SshService } from "../ssh/ssh.js";
 
 interface SessionRow {
   id: string;
@@ -65,8 +67,8 @@ async function commandExists(binary: string): Promise<boolean> {
   return result.exitCode === 0;
 }
 
-function resolveCommand(input: CreateSessionInput): string[] {
-  if (input.agentType === "shell") return [defaultShell()];
+function resolveCommand(input: CreateSessionInput, remote: boolean): string[] {
+  if (input.agentType === "shell") return [remote ? "powershell.exe" : defaultShell()];
   if (input.agentType === "custom") {
     const raw = (input.command ?? "").trim();
     if (!raw) throw httpError(400, "custom agent requires a command");
@@ -84,6 +86,7 @@ export class SessionService {
   private readonly tracker: ActivityTracker;
   private readonly bus: EventBus;
   private readonly uploads: UploadService;
+  private readonly ssh: SshService;
 
   constructor(
     db: Db,
@@ -92,6 +95,7 @@ export class SessionService {
     tracker: ActivityTracker,
     bus: EventBus,
     uploads: UploadService,
+    ssh: SshService,
   ) {
     this.db = db;
     this.projects = projects;
@@ -99,6 +103,7 @@ export class SessionService {
     this.tracker = tracker;
     this.bus = bus;
     this.uploads = uploads;
+    this.ssh = ssh;
   }
 
   list(): SessionWithRuntime[] {
@@ -132,15 +137,24 @@ export class SessionService {
     return { session, runtime: this.tracker.get(session.id) };
   }
 
+  isRemote(id: string): boolean {
+    const session = this.get(id);
+    return this.projects.get(session.projectId).location.kind === "ssh";
+  }
+
   async create(input: CreateSessionInput): Promise<SessionWithRuntime> {
     const project = this.projects.get(input.projectId);
     const cwd = (input.cwd ?? "").trim() || project.rootPath;
-    if (!path.isAbsolute(cwd)) throw httpError(400, `cwd must be absolute: ${cwd}`);
-    if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
-      throw httpError(400, `cwd is not a directory: ${cwd}`);
+    if (project.location.kind === "ssh") {
+      if (!isWindowsAbsolutePath(cwd)) throw httpError(400, `cwd must be an absolute Windows path: ${cwd}`);
+    } else {
+      if (!path.isAbsolute(cwd)) throw httpError(400, `cwd must be absolute: ${cwd}`);
+      if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+        throw httpError(400, `cwd is not a directory: ${cwd}`);
+      }
     }
-    const command = resolveCommand(input);
-    if (!(await commandExists(command[0] ?? ""))) {
+    const command = resolveCommand(input, project.location.kind === "ssh");
+    if (project.location.kind === "local" && !(await commandExists(command[0] ?? ""))) {
       throw httpError(400, `\`${command[0]}\` not found in PATH`);
     }
     const session: Session = {
@@ -154,8 +168,28 @@ export class SessionService {
       tmuxName: newId("sb"),
       createdAt: new Date().toISOString(),
     };
+    const launch = project.location.kind === "ssh"
+      ? {
+          cwd: this.ssh.localRuntimeCwd,
+          command: this.ssh.buildAgentCommand(
+            project.location,
+            cwd,
+            command,
+            session.env,
+            input.agentType === "shell",
+          ),
+          env: {},
+          remainOnExit: true,
+        }
+      : { cwd, command, env: session.env, remainOnExit: false };
     try {
-      await this.tmux.newSession(session.tmuxName, cwd, command, session.env);
+      await this.tmux.newSession(
+        session.tmuxName,
+        launch.cwd,
+        launch.command,
+        launch.env,
+        { remainOnExit: launch.remainOnExit },
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw httpError(500, `tmux new-session failed: ${message}`);
@@ -175,24 +209,45 @@ export class SessionService {
         session.tmuxName,
         session.createdAt,
       );
-    this.tracker.seed(session.id);
+    this.tracker.seed(session.id, project.location.kind === "ssh");
     this.bus.publish({ type: "session.created", session });
     return { session, runtime: this.tracker.get(session.id) };
   }
 
   async restart(id: string): Promise<SessionWithRuntime> {
     const session = this.get(id);
+    const project = this.projects.get(session.projectId);
     await this.tmux.killSession(session.tmuxName);
+    const launch = project.location.kind === "ssh"
+      ? {
+          cwd: this.ssh.localRuntimeCwd,
+          command: this.ssh.buildAgentCommand(
+            project.location,
+            session.cwd,
+            session.command,
+            session.env,
+            session.agentType === "shell",
+          ),
+          env: {},
+          remainOnExit: true,
+        }
+      : { cwd: session.cwd, command: session.command, env: session.env, remainOnExit: false };
     try {
       // The pane is recreated from scratch, so the stored launch env has to be
       // re-applied: without it a restart would silently drop the variables the
       // session was created with (D9).
-      await this.tmux.newSession(session.tmuxName, session.cwd, session.command, session.env);
+      await this.tmux.newSession(
+        session.tmuxName,
+        launch.cwd,
+        launch.command,
+        launch.env,
+        { remainOnExit: launch.remainOnExit },
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw httpError(500, `tmux new-session failed: ${message}`);
     }
-    this.tracker.seed(session.id);
+    this.tracker.reset(session.id, project.location.kind === "ssh");
     this.bus.publish({ type: "session.updated", session });
     return { session, runtime: this.tracker.get(session.id) };
   }

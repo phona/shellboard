@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import type { FileEntry, SessionWithRuntime, UploadEntry } from "@shellboard/contracts";
-import { ApiError, api } from "../../api/client";
+import type { FileEntry, UploadEntry } from "@shellboard/contracts";
+import { ApiError, api, type ShellboardSessionWithRuntime } from "../../api/client";
 import { Modal } from "../../components/Modal";
 import { IconCopy } from "../../components/icons";
 import { FileEditor } from "./FileEditor";
@@ -22,7 +22,7 @@ type PromptState =
   | { kind: "dir" }
   | { kind: "rename"; entry: FileEntry };
 
-export function FilesPanel({ data }: { data: SessionWithRuntime }) {
+export function FilesPanel({ data }: { data: ShellboardSessionWithRuntime }) {
   const id = data.session.id;
   const queryClient = useQueryClient();
   const [dir, setDir] = useState(".");

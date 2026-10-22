@@ -105,6 +105,42 @@ History 按钮(copy-mode,见 D5);systemd unit + 部署文档
 
 验收:`ARCHITECTURE.md` §1.3 成功标准全表过一遍。不加 Agent 智能。
 
+### M6 — SSH Remote Projects
+
+Project 创建时选择 `local` 或 `ssh`。SSH Project 直接配置 host/IP、port、username、认证方式和 Windows 远端 rootPath;Session 继承连接配置。认证使用 SSH key/agent（可选本机 identity file 路径）或 terminal 内密码提示；密码和私钥内容不保存。首期远端 shell 为 Windows PowerShell。tmux 仍在 Shellboard 主机的 dedicated socket,远端启动链路为 `本机 tmux → ssh -tt → PowerShell → agent`；远端不需要 tmux。
+
+**R1 — Remote Session + Terminal**
+
+```text
+Project/Session contracts + SQLite migration(local default)
+Host/port/user/auth fields;Windows rootPath contract
+PowerShell UTF-16LE EncodedCommand builder;SSH -F /dev/null
+本机 tmux pane 持有 SSH;ServerAliveInterval/CountMax;无 autossh
+本地 tmux pane exit 保留;observer 读取 SSH transport 状态
+UI 显示 username@host:port 与 SSH disconnected;手动 Restart 启动新命令
+```
+
+验收:旧 Project 迁移后仍为 local;远程 Project 能用 PowerShell 启动 Windows agent;密码提示在 terminal 中可交互且不落库;浏览器/WS 断开不结束 SSH;SSH 异常断联后显示 transport disconnected/remote state unknown,不自动启动 agent;Restart 明确创建新命令;真实 Windows OpenSSH + tmux 验证 resize、Take Over、host key 与认证失败。终端输入输出不进日志。
+
+**R2 — Remote Git + Files**
+
+```text
+Git status/diff/stage/unstage/discard 通过 SSH 在目标机执行
+Files 与 upload 在目标机执行;realpath/symlink sandbox 不能使用本机 fs
+远端 upload buffer 存在目标机,发送给 agent 的是远端路径
+```
+
+验收:越界路径与 symlink escape 在目标机拒绝;远端 Git 操作结果与远端 CLI 一致;上传后的 agent 路径可读;任何 SSH 故障不能误报成空目录或干净 Git 状态。
+
+**R3 — Remote Tool Terminal + Notify**
+
+```text
+Tool Terminal 通过 SSH 在远端 cwd 启动临时 shell
+notify/hooks 设计远端认证与事件回传
+```
+
+Remote R1 不提供断线后 reattach 同一 agent。若需要该保证、可靠的远端进程枚举或断线后的强制 kill,需要另立阶段引入远端 tmux/运行时。
+
 ## 3. Coding Agent 工作流拆分
 
 | workstream | 依赖 | 内容 |

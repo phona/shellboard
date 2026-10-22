@@ -9,6 +9,9 @@ export interface ServerConfig {
   homeDir: string;
   dbPath: string;
   tmuxSocket: string;
+  sshConnectTimeoutSeconds: number;
+  sshServerAliveIntervalSeconds: number;
+  sshServerAliveCountMax: number;
   webDist: string;
   /** When set, all /api routes (except /api/auth/*) require this token cookie. */
   token: string | null;
@@ -56,6 +59,9 @@ export function loadConfig(): ServerConfig {
     homeDir,
     dbPath: process.env.SHELLBOARD_DB ?? path.join(homeDir, "shellboard.db"),
     tmuxSocket: process.env.SHELLBOARD_TMUX_SOCKET ?? "shellboard",
+    sshConnectTimeoutSeconds: clampSshOption(process.env.SHELLBOARD_SSH_CONNECT_TIMEOUT, 10, 1, 120),
+    sshServerAliveIntervalSeconds: clampSshOption(process.env.SHELLBOARD_SSH_SERVER_ALIVE_INTERVAL, 15, 0, 3600),
+    sshServerAliveCountMax: clampSshOption(process.env.SHELLBOARD_SSH_SERVER_ALIVE_COUNT_MAX, 3, 1, 20),
     webDist: process.env.SHELLBOARD_WEB_DIST ?? path.resolve(import.meta.dirname, "../../web/dist"),
     token,
     notifyToken: resolveNotifyToken(homeDir),
@@ -67,6 +73,12 @@ export function loadConfig(): ServerConfig {
       .map((value) => value.trim())
       .filter((value) => value.length > 0),
   };
+}
+
+function clampSshOption(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const value = Number(raw ?? fallback);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
 /**

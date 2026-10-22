@@ -149,9 +149,22 @@ xterm.onData() → WS → pty.write()
 interface Project {
   id: string;
   name: string;
+  location: ProjectLocation;
   rootPath: string;
   createdAt: string;
 }
+
+type ProjectLocation =
+  | { kind: "local" }
+  | {
+      kind: "ssh";
+      host: string;
+      port: number;
+      username: string;
+      auth:
+        | { kind: "key"; identityFile?: string }
+        | { kind: "password-prompt" };
+    };
 
 interface Session {
   id: string;
@@ -182,6 +195,7 @@ interface SessionRuntime {
   attachedClients: number;   // 服务端恒为 0 或 1,见 D4
   lastActivityAt: number | null;
   activity: "working" | "cooling" | "idle" | "exited";
+  transport: "local" | "connecting" | "connected" | "disconnected" | "unknown";
 }
 ```
 
@@ -283,6 +297,30 @@ claude-opus     claude            ANTHROPIC_MODEL=opus
 - **校验在 contracts**(两端同一份规则):key 必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$`;拒绝 `TMUX`/`TMUX_PANE`(会打断 D8 的 pane 归属与 pane 内 tmux 探测)、`TERM`(打断渲染)、`HOME`/`SHELL`/`TMPDIR`(静默搬走 agent 自己的状态)与 `SHELLBOARD_` 前缀;每条命令最多 24 个变量、值上限 4096 字符。`PATH` 故意允许:把 `PATH=/opt/claude-2/bin:$PATH` 钉死是真实需求,配错只毁用户自己的 pane,改 preset 即可恢复。
 - **密钥边界**:env 值按明文经 API 返回、明文存 SQLite,与 `shellboard.db` 本身、token/cookie 鉴权、默认回环绑定的既有威胁模型一致;**任何日志都不记录 env 值**(service 与 route 都不记请求体)。需要"只写不可读"的 per-variable secret 标记是后续可选项,不是 v1 的一部分。
 - 不做:per-project 命令、命令变更的 WS 广播(多标签刷新由 `refetchOnWindowFocus` 覆盖)、以及任何超出 `SessionService.create` 既有校验的执行面。
+
+### D10 SSH Remote Project（首期）
+
+Project 有执行位置:`local` 或 `ssh`。SSH Project 显式保存 host/IP、port、username 和认证方式;Session 继承 Project 的连接配置,`rootPath` / `cwd` 是目标 Windows 机器上的绝对路径。现有 Project 迁移为 `local`。
+
+首期的远端 shell 固定为 Windows PowerShell，agent 命令必须在 Windows PATH 中可用（PowerShell 使用 `-NoProfile`，保留交互控制台，不使用 `-NonInteractive`）。认证方式为 SSH key/agent（可选本机 identity file 路径）或连接时在 terminal 输入密码。密码和私钥内容不进入 SQLite、API、命令参数或日志。使用 OpenSSH 默认 host-key 校验;首次信任提示在 terminal 中由用户处理。SSH 使用 `-F /dev/null`，不依赖 `~/.ssh/config` 或 system ssh config；因此首期不支持 ProxyJump/ProxyCommand。
+
+远程 agent 的启动链路:
+
+```text
+本机 dedicated tmux pane → ssh -tt <host> -p <port> -l <username>
+  → powershell.exe -EncodedCommand <UTF-16LE Base64 script>
+  → Set-Location → agent CLI
+```
+
+PowerShell 脚本包含远端 cwd、环境变量和 agent argv,经 UTF-16LE Base64 编码后传输,避免把用户数据拼进多层 shell 引号。脚本设置 PowerShell location 与进程级 current directory,使 native agent 继承 Project/Session cwd。Project 创建只做字段格式校验;不执行网络预检,这样 password-prompt 也能工作。Session 启动后由远端脚本检查 cwd 和 agent 命令,错误显示在 terminal。
+
+tmux 仍运行在 Shellboard 所在机器的 `-L shellboard` socket 中;远端首期不需要 tmux。Shellboard 的 node-pty 仍 attach 本机 tmux。浏览器/WS 断开只结束 attach PTY,本机 tmux 中的 SSH 继续运行。SSH 使用 `ServerAliveInterval` / `ServerAliveCountMax` 检测半开连接;它们不提供断线恢复。首期不使用 autossh,避免 SSH 重新连接时重复执行 agent 启动命令。
+
+`SessionRuntime.activity` 仍是 tmux 输出活动提示,不代表 agent 语义或存活保证。`transport` 单独表示 local、connecting、connected、disconnected 或 unknown。connected 只说明本机 SSH 子进程仍运行;SSH 断开时远端 agent 状态为 unknown,UI 显示 SSH disconnected。查询错误不得映射成 agent exited。用户手动 Restart 会启动新的 SSH + agent 命令,不承诺恢复旧进程;不自动重启。
+
+首期 remote Kill 结束本机 tmux session 与 SSH PTY。前台交互命令通常随远端 PTY 关闭而退出;脱离终端或忽略挂断信号的远端进程无法由此保证清理。需要断线后重新 attach 同一 agent、精确查询远端进程或保证 remote kill 时,必须引入远端运行时,例如远端 tmux。
+
+R1 只支持 Project、Session、Activity 与 Terminal。Git/Files 等不能继续把远端 `cwd` 交给本机服务;后续阶段必须在目标机完成 Git 与 Windows path / reparse-point sandbox。所有远程操作继续走显式 service 和 Zod contracts,不增加通用 SSH exec endpoint。终端字节、env 值和文件内容不进日志。
 
 ## 5. API Surface(全集)
 ```text
