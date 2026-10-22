@@ -1,8 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useUi } from "../state/store";
-import { useUploads } from "../state/uploads";
+import { useUploads, type UploadTask } from "../state/uploads";
 import { isTypingTarget } from "../util/dom";
+import { SendPathModal } from "./SendConfirm";
 
 function filesFromClipboard(data: DataTransfer | null): File[] {
   if (!data) return [];
@@ -27,7 +28,8 @@ function filesFromClipboard(data: DataTransfer | null): File[] {
  *   nothing. Any text in the clipboard means the terminal keeps the paste.
  *
  * No upload ever fires automatically — paste is the user's gesture. Also
- * renders the progress pill.
+ * renders the progress pill and the send-path confirmation, so everything the
+ * upload buffer can put in front of the user lives in one root-mounted place.
  */
 export function UploadManager() {
   const selectedSessionId = useUi((state) => state.selectedSessionId);
@@ -75,18 +77,25 @@ export function UploadManager() {
   }, [selectedSessionId, queryClient]);
 
   const current = tasks[0];
-  if (!current) return null;
   const rest = tasks.length - 1;
-  const label =
-    current.phase === "compressing"
-      ? `compressing ${current.name}${rest > 0 ? ` (+${rest})` : ""}`
-      : `uploading ${current.name} · ${current.percent}%${rest > 0 ? ` (+${rest})` : ""}`;
+  /** One pill for the whole queue: the file in flight, plus how many wait. */
+  const pillLabel = (task: UploadTask): string => {
+    const queued = rest > 0 ? ` (+${rest})` : "";
+    return task.phase === "compressing"
+      ? `compressing ${task.name}${queued}`
+      : `uploading ${task.name} · ${task.percent}%${queued}`;
+  };
   return (
-    <div className="upload-pill" role="status" aria-live="polite">
-      <div className="upload-pill-track">
-        <div className="upload-pill-bar" style={{ transform: `scaleX(${current.percent / 100})` }} />
-      </div>
-      <span>{label}</span>
-    </div>
+    <>
+      {current && (
+        <div className="upload-pill" role="status" aria-live="polite">
+          <div className="upload-pill-track">
+            <div className="upload-pill-bar" style={{ transform: `scaleX(${current.percent / 100})` }} />
+          </div>
+          <span>{pillLabel(current)}</span>
+        </div>
+      )}
+      <SendPathModal />
+    </>
   );
 }

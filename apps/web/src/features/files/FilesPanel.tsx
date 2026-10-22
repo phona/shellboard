@@ -84,16 +84,23 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
     },
     onError: (err) => onError(err, "delete failed"),
   });
-  const sendUpload = useMutation({
-    mutationFn: (name: string) => api.uploads.send(id, name),
-    onSuccess: () => toast("path sent to terminal"),
-    onError: (err) => onError(err, "send failed"),
-  });
   const removeUpload = useMutation({
     mutationFn: (name: string) => api.uploads.remove(id, name),
     onSuccess: invalidateUploads,
     onError: (err) => onError(err, "delete failed"),
   });
+
+  // The send goes through the confirmation every path send now uses — the row
+  // states what it does, and the dialog states it again before anything is
+  // typed into the pane.
+  const requestSendPath = (entry: UploadEntry) => {
+    useUploads.getState().requestSend({
+      sessionId: id,
+      name: entry.name,
+      path: entry.path,
+      size: entry.size,
+    });
+  };
 
   const copyUploadPath = (entry: UploadEntry) => {
     void navigator.clipboard.writeText(entry.path).then(() => toast("path copied"));
@@ -237,7 +244,7 @@ export function FilesPanel({ data }: { data: SessionWithRuntime }) {
                 <button
                   type="button"
                   title="Send absolute path to the agent shell (types it, no Enter)"
-                  onClick={() => sendUpload.mutate(entry.name)}
+                  onClick={() => requestSendPath(entry)}
                 >
                   →
                 </button>
