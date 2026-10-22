@@ -8,6 +8,9 @@ export const KEYBINDINGS = {
   terminalSearch: "Ctrl+f",
   terminalCopy: "Ctrl+c",
   terminalCopyShift: "Ctrl+Shift+c",
+  // Swallowed in the terminal's key handler so xterm never turns them into the
+  // SYN control code; the paste itself is gated from the `paste` event (see
+  // features/terminal/useTerminalWs.ts), which is where every gesture lands.
   terminalPaste: "Ctrl+v",
   terminalPasteShift: "Ctrl+Shift+v",
   terminalBottom: "Ctrl+End",

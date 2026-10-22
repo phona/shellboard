@@ -20,21 +20,39 @@ export interface UploadTask {
   phase: "compressing" | "uploading";
 }
 
+/** A buffer path held for confirmation. Nothing is typed into the pane until the
+    user confirms, the same gate the terminal puts in front of a multi-line
+    paste — see components/SendConfirm.tsx. */
+export interface PendingSend {
+  sessionId: string;
+  /** Server-side name in the upload buffer. */
+  name: string;
+  /** Absolute path the server will type — what the dialog shows. */
+  path: string;
+  /** Bytes, when the caller knows them. */
+  size: number | null;
+}
+
 interface UploadsState {
   tasks: UploadTask[];
+  pending: PendingSend | null;
   start(input: StartUploads): void;
+  requestSend(send: PendingSend): void;
+  cancelSend(): void;
+  confirmSend(): void;
 }
 
 let nextTaskId = 1;
 
 /**
  * Global upload queue: one file at a time, one progress pill, per-file toast.
- * Buffer-lane uploads get an action that types a path into the agent shell —
- * the entry that landed, or, when the file was re-encoded first, the untouched
- * original. Repo-dir uploads are plain. The store owns neither queries nor
- * navigation — callers pass onSettled to invalidate what they display.
+ * Buffer-lane uploads get an action that asks before typing a path into the
+ * agent shell — the entry that landed, or, when the file was re-encoded first,
+ * the untouched original. Repo-dir uploads are plain. The store owns neither
+ * queries nor navigation — callers pass onSettled to invalidate what they
+ * display.
  */
-export const useUploads = create<UploadsState>()((set) => {
+export const useUploads = create<UploadsState>()((set, get) => {
   const patch = (id: number, fields: Partial<UploadTask>) =>
     set((state) => ({
       tasks: state.tasks.map((task) => (task.id === id ? { ...task, ...fields } : task)),
@@ -52,8 +70,25 @@ export const useUploads = create<UploadsState>()((set) => {
     }
   };
 
+  /** Holds a buffer entry for the send confirmation. The lane answers with the
+      absolute path the send will type, so a response without one is a contract
+      break — and a dialog whose whole job is showing the exact payload must not
+      offer to send something it cannot show. */
+  const holdForConfirmation = (
+    sessionId: string,
+    entry: { name: string; path: string | null },
+    size: number,
+  ): void => {
+    if (entry.path === null) {
+      toast("upload answered without a path — nothing sent", "error");
+      return;
+    }
+    set({ pending: { sessionId, name: entry.name, path: entry.path, size } });
+  };
+
   return {
     tasks: [],
+    pending: null,
     start: (input) => {
       void (async () => {
         for (const file of input.files) {
@@ -67,7 +102,7 @@ export const useUploads = create<UploadsState>()((set) => {
             // size of what its camera produces.
             const prepared = await prepareUpload(file);
             patch(id, { phase: "uploading" });
-            const { name } = await uploadBinary(
+            const entry = await uploadBinary(
               { sessionId: input.sessionId, dir: input.dir },
               prepared.file,
               {
@@ -78,28 +113,30 @@ export const useUploads = create<UploadsState>()((set) => {
             const summary = resizeSummary(prepared);
             const message =
               summary === null
-                ? `${name} uploaded`
-                : `${name} uploaded (compressed ${summary})`;
+                ? `${entry.name} uploaded`
+                : `${entry.name} uploaded (compressed ${summary})`;
             if (input.dir === undefined) {
               // A re-encoded photo is not what the camera produced, so the
               // escape hatch rides on this toast: it pushes the untouched
-              // original into the buffer and types *that* path. Sending the
+              // original into the buffer and confirms *that* path. Sending the
               // shrunken copy stays available per entry in the buffer list.
               const resized = prepared.resizedFrom !== null;
               toast(message, "info", {
-                label: resized ? "send original" : "Send",
+                label: resized ? "Send original" : "Send",
                 onClick: () => {
                   if (!resized) {
-                    void sendBufferPath(input.sessionId, name);
+                    holdForConfirmation(input.sessionId, entry, prepared.file.size);
                     return;
                   }
                   void (async () => {
                     try {
-                      const { name: originalName } = await uploadBinary(
+                      // The dialog opens only once the original has landed: it
+                      // must show the path that will actually be typed.
+                      const original = await uploadBinary(
                         { sessionId: input.sessionId },
                         file,
                       );
-                      await sendBufferPath(input.sessionId, originalName);
+                      holdForConfirmation(input.sessionId, original, file.size);
                     } catch (err) {
                       toast(
                         err instanceof ApiError ? err.message : "send original failed",
@@ -120,6 +157,16 @@ export const useUploads = create<UploadsState>()((set) => {
         }
         input.onSettled?.();
       })();
+    },
+    requestSend: (send) => set({ pending: send }),
+    cancelSend: () => set({ pending: null }),
+    confirmSend: () => {
+      const send = get().pending;
+      if (!send) return;
+      // Clear first: the dialog closes on the click, and a second Enter must
+      // not find a payload to send twice.
+      set({ pending: null });
+      void sendBufferPath(send.sessionId, send.name);
     },
   };
 });

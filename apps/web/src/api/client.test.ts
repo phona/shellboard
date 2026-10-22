@@ -237,6 +237,29 @@ describe("uploadBinary", () => {
     stubXhr({ response: { name: "buffer/1-a.txt" } });
     await expect(uploadBinary({ sessionId: "s1" }, file())).resolves.toEqual({
       name: "buffer/1-a.txt",
+      path: null,
+    });
+  });
+
+  it("reports the absolute path the buffer lane answers with", async () => {
+    // What the send confirmation shows, so the client cannot drop it: the
+    // buffer entry carries the path "Send to terminal" will type.
+    stubXhr({
+      response: { name: "1-a.txt", path: "/home/tao/.shellboard/uploads/s1/1-a.txt" },
+    });
+    await expect(uploadBinary({ sessionId: "s1" }, file())).resolves.toEqual({
+      name: "1-a.txt",
+      path: "/home/tao/.shellboard/uploads/s1/1-a.txt",
+    });
+  });
+
+  it("reports no path for the cwd lane, whose path is repo-relative", async () => {
+    // A relative path is not what any send types, so it must not reach the
+    // confirmation as if it were.
+    stubXhr({ response: { name: "a.txt", path: "docs/a.txt", type: "file" } });
+    await expect(uploadBinary({ sessionId: "s1", dir: "docs" }, file())).resolves.toEqual({
+      name: "a.txt",
+      path: null,
     });
   });
 
@@ -312,7 +335,7 @@ describe("uploadBinary", () => {
     const retries: number[] = [];
     await expect(
       uploadBinary({ sessionId: "s1" }, file(), { onRetry: (a) => retries.push(a) }),
-    ).resolves.toEqual({ name: "n" });
+    ).resolves.toEqual({ name: "n", path: null });
     expect(xhr.sends()).toBe(2);
     expect(retries).toEqual([2]);
   });

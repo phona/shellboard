@@ -756,6 +756,25 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+/* Launch environment of a registered command, shown under its name: the
+   variables are the reason the preset exists, so they stay visible at a
+   glance. Same mono treatment as the command itself. */
+.command-row .command-env {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+
 .command-add {
   display: flex;
   flex-direction: column;
@@ -769,6 +788,114 @@ button:focus-visible {
 
 .command-add .btn {
   align-self: flex-end;
+}
+
+.command-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.command-hint,
+.command-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ---------- launch environment editor ---------- */
+
+.env-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.env-modes {
+  display: flex;
+  gap: 4px;
+}
+
+/* Rows / Bulk: a two-state switch over the same data, not two buttons. Kept
+   quieter than .btn — it is a mode toggle inside a form, never an action. */
+.env-mode {
+  padding: 1px 7px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: transparent;
+}
+
+.env-mode.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The base input/select rule does not cover textarea, so the bulk lane styles
+   itself: mono (it holds KEY=value text), vertical resize only. */
+.env-bulk {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  resize: vertical;
+}
+
+.env-hint {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.env-hint code {
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.env-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.env-row input {
+  font-family: var(--mono);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.env-row .icon-btn {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+
+.env-row-error {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--danger);
+}
+
+.dialog-env {
+  margin: 6px 0;
+}
+
+.dialog-env summary {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.dialog-env[open] summary {
+  margin-bottom: 4px;
 }
 
 .dialog-section {
@@ -1095,9 +1222,11 @@ button:focus-visible {
   line-height: 1.55;
 }
 
+/* The preview lives in a panel whose width the user drags (240-900px). Cap the
+   line length but keep the column anchored left: centering it would make the
+   same document jump between two layouts as the panel resizes. */
 .markdown-preview > * {
   max-width: 78ch;
-  margin-inline: auto;
 }
 
 .markdown-preview > * + * {
@@ -1144,8 +1273,6 @@ button:focus-visible {
 }
 
 .markdown-preview blockquote {
-  margin-left: auto;
-  margin-right: auto;
   padding-left: 12px;
   border-left: 2px solid var(--border);
   color: var(--text-muted);
@@ -1507,6 +1634,61 @@ button:focus-visible {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+
+/* The send confirmation: the one dialog whose whole job is to show the exact
+   payload about to be handed to a shell, so the payload gets the warning tone
+   and the mono treatment; the accent stays on the Send button. Shared by the
+   terminal's multi-line paste gate and the upload buffer's path injection
+   (components/SendConfirm.tsx). */
+.send-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.send-confirm-payload {
+  padding: 6px 8px;
+  border-left: 2px solid var(--warning);
+  border-radius: 0 6px 6px 0;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+  /* A pasted line is one long unwrapped string far more often than not, and a
+     buffer path has no spaces to wrap on. */
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.send-confirm-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.send-confirm-risk {
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.send-confirm-keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.send-confirm-keys kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text);
 }
 
 .form-error {
@@ -1979,6 +2161,20 @@ body:has(.live-pill) .toast-stack {
   }
 
   /* Thumb-sized targets: bars and rows grow. */
+  /* The terminal has its own selection model. Disable the browser's
+     touch callout and its selectable accessibility text layer so long-press
+     and drag stay with that model on phones. */
+  .terminal-host,
+  .terminal-host * {
+    -webkit-touch-callout: none;
+  }
+
+  .terminal-host .xterm .xterm-accessibility-tree,
+  .terminal-host .xterm .xterm-accessibility-tree * {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
   .terminal-head {
     height: 44px;
   }

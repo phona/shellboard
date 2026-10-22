@@ -180,6 +180,15 @@ export interface UploadBinaryOptions {
   onRetry?: (attempt: number, reason: string) => void;
 }
 
+/** What an upload answers with: the server-side name both lanes report, plus —
+    for the upload buffer only — the absolute path that "Send to terminal"
+    types. The cwd lane answers with a repo-relative path instead, which is not
+    what any send uses, so it reports null. */
+export interface UploadResult {
+  name: string;
+  path: string | null;
+}
+
 /**
  * Mobile networks stall instead of failing: a connection with no new bytes for
  * this long is treated as dead and the attempt is cut short. The watch only
@@ -235,13 +244,13 @@ function interruptReason(stalled: boolean, progress: TransferProgress): string {
 }
 
 /** One attempt. Resolves with the server-side name (the buffer lane
-    uniquifies collisions). */
+    uniquifies collisions) and, in the buffer lane, the absolute path. */
 function uploadOnce(
   target: UploadTarget,
   file: File,
   options: UploadBinaryOptions,
   progress: TransferProgress,
-): Promise<{ name: string }> {
+): Promise<UploadResult> {
   const search =
     target.dir === undefined
       ? query({ name: file.name })
@@ -293,9 +302,12 @@ function uploadOnce(
         reject(new ApiError(401, "unauthorized"));
         return;
       }
-      const body = xhr.response as { error?: string; name?: string } | null;
+      const body = xhr.response as { error?: string; name?: string; path?: string } | null;
       if (xhr.status >= 200 && xhr.status < 300 && typeof body?.name === "string") {
-        resolve({ name: body.name });
+        resolve({
+          name: body.name,
+          path: target.dir === undefined && typeof body.path === "string" ? body.path : null,
+        });
         return;
       }
       // A body over the limit is answered by the edge with an HTML page,
@@ -328,13 +340,14 @@ function uploadOnce(
 /**
  * Raw binary upload (application/octet-stream) with progress. fetch() has no
  * upload progress, so this is an XMLHttpRequest. Resolves with the final
- * server-side name (the buffer lane uniquifies collisions).
+ * server-side name (the buffer lane uniquifies collisions) and the absolute
+ * path in the buffer lane.
  */
 export async function uploadBinary(
   target: UploadTarget,
   file: File,
   options: UploadBinaryOptions = {},
-): Promise<{ name: string }> {
+): Promise<UploadResult> {
   // Refuse locally: sending a body the edge (or the server) will cut off only
   // burns the user's connection to learn what the file size already says.
   if (file.size > MAX_UPLOAD_BYTES) throw new ApiError(413, oversizeMessage);

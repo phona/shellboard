@@ -20,6 +20,7 @@ import {
   restoredViewportY,
 } from "./historyReconcile";
 import { inputModeSequences } from "./inputModes";
+import { pendingPasteDetails, type PasteConfirmation } from "./pasteGate";
 
 export type TerminalStatus =
   | "connecting"
@@ -51,7 +52,7 @@ export interface TerminalApi {
   historyPage(): void;
   paste(): void;
   /** Multi-line paste gate: set before anything containing newlines runs. */
-  pasteConfirmation: { lines: number } | null;
+  pasteConfirmation: PasteConfirmation | null;
   confirmPaste(): void;
   cancelPaste(): void;
   copySelection(): void;
@@ -78,7 +79,7 @@ export function useTerminalWs(path: string): TerminalApi {
   const inputQueueRef = useRef<{ chunks: Uint8Array[]; bytes: number }>({ chunks: [], bytes: 0 });
   const [status, setStatus] = useState<TerminalStatus>("connecting");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [pasteConfirmation, setPasteConfirmation] = useState<{ lines: number } | null>(null);
+  const [pasteConfirmation, setPasteConfirmation] = useState<PasteConfirmation | null>(null);
   const pendingPasteRef = useRef<string | null>(null);
   const [ctrlArmed, setCtrlArmedState] = useState(false);
   const ctrlArmedRef = useRef(false);
@@ -124,6 +125,21 @@ export function useTerminalWs(path: string): TerminalApi {
     }
     sendResize();
   }, [sendResize]);
+
+  // Paste gate (VS Code-style): multi-line clipboard content is executed line
+  // by line by the shell, so it needs explicit confirmation. Every entry point
+  // funnels through here — Ctrl+V / Ctrl+Shift+V in the pane, the toolbar
+  // button, right-click — so there is one definition of "dangerous to paste"
+  // and the paths cannot drift apart on it.
+  const gatePaste = useCallback((text: string): void => {
+    if (!text) return;
+    if (!text.includes("\n")) {
+      termRef.current?.paste(text);
+      return;
+    }
+    pendingPasteRef.current = text;
+    setPasteConfirmation(pendingPasteDetails(text));
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -495,17 +511,8 @@ export function useTerminalWs(path: string): TerminalApi {
         }
       });
 
-      // Paste gate (VS Code-style): multi-line clipboard content is executed
-      // line by line by the shell, so it needs explicit confirmation.
-      const gatePaste = (text: string): void => {
-        if (!text) return;
-        if (!text.includes("\n")) {
-          term.paste(text);
-          return;
-        }
-        pendingPasteRef.current = text;
-        setPasteConfirmation({ lines: text.split("\n").length });
-      };
+      // Paste gate: multi-line content is held for confirmation (see
+      // gatePaste), single-line goes straight through.
       const readAndGate = (): void => {
         void navigator.clipboard
           .readText()
@@ -515,25 +522,60 @@ export function useTerminalWs(path: string): TerminalApi {
           });
       };
 
-      // Right-click = paste (PuTTY style) — pointer devices only. On touch,
-      // long-press must reach xterm's own touch-selection gesture; the key
-      // row carries paste there anyway.
+      // The browser's own paste is the gesture that must never reach the pane
+      // ungated — and it used to, which made the confirmation decoration.
+      // xterm registers its own `paste` listeners on the textarea and on the
+      // .xterm element (verified in @xterm/xterm 6.0.0, _initGlobal):
+      // handlePasteEvent() takes clipboardData and calls paste(), which sends
+      // the text to the PTY immediately, gated by nothing. That is what made
+      // the dialog a second copy of text the shell had already received.
+      //
+      // The `paste` event is cancelable and fires before any text is inserted,
+      // so intercepting it in the capture phase replaces xterm's handler for
+      // every gesture that produces one — Ctrl+V, middle click on Linux, the
+      // browser's Paste menu item, mobile paste. It also carries the text
+      // synchronously: no clipboard permission, no race with the keystroke.
+      const onPaste = (event: ClipboardEvent) => {
+        const text = event.clipboardData?.getData("text/plain") ?? "";
+        // Empty or non-text (an image) is not ours to gate; leaving the event
+        // alone keeps the browser's own handling and the upload path intact.
+        if (!text) return;
+        event.preventDefault();
+        event.stopPropagation();
+        gatePaste(text);
+      };
+      container.addEventListener("paste", onPaste, true);
+
+      // Right-click = paste (PuTTY style) on pointer devices. On touch, block
+      // the browser's native long-press menu so our selection gesture owns it;
+      // paste stays on the mobile key row.
       const contextMenu = (event: MouseEvent) => {
         event.preventDefault();
         readAndGate();
       };
-      if (!window.matchMedia("(hover: none)").matches) {
+      const suppressTouchContextMenu = (event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      if (window.matchMedia("(hover: none)").matches) {
+        container.addEventListener("contextmenu", suppressTouchContextMenu, true);
+      } else {
         container.addEventListener("contextmenu", contextMenu, true);
       }
 
-      // Touch selection: xterm 6 has none. A long-press (>500ms, <10px drift)
-      // selects the cell under the finger, dragging extends it (panning is
-      // blocked only while a selection drag is active — a plain swipe keeps
-      // native scrolling), and releasing copies, mirroring the mouse
-      // copy-on-release. All display-layer cell math.
-      let touchStart: { x: number; y: number; at: number } | null = null;
+      // Touch selection: xterm 6 has none. A double-tap selects a full line;
+      // holding for 420ms with less than 18px of drift sets an anchor, then
+      // dragging extends the selection. Screen rows must be translated to
+      // absolute buffer rows because xterm's selection API uses buffer coordinates.
+      const TOUCH_LONG_PRESS_MS = 420;
+      const TOUCH_SELECTION_SLOP_PX = 18;
+      const DOUBLE_TAP_INTERVAL_MS = 350;
+      const DOUBLE_TAP_DISTANCE_PX = 32;
+      let touchStart: { x: number; y: number; at: number; bufferRow: number | null } | null = null;
       let touchAnchor: { col: number; row: number } | null = null;
       let touchTimer: number | null = null;
+      let touchMoved = false;
+      let lastTap: { at: number; x: number; bufferRow: number } | null = null;
       let lastSwipeY: number | null = null;
       let swipeAccum = 0;
       // Momentum: a finger release keeps scrolling with decaying velocity —
@@ -588,9 +630,8 @@ export function useTerminalWs(path: string): TerminalApi {
       };
       const applyTouchSelection = (cur: { col: number; screenRow: number }) => {
         if (!touchAnchor) return;
-        // select() takes absolute buffer rows (viewport row + scroll offset)
         const a = touchAnchor.row;
-        const b = cur.screenRow;
+        const b = term.buffer.active.viewportY + cur.screenRow;
         const cols = term.cols;
         if (b > a || (b === a && cur.col >= touchAnchor.col)) {
           term.select(touchAnchor.col, a, (b - a) * cols + cur.col - touchAnchor.col + 1);
@@ -598,35 +639,97 @@ export function useTerminalWs(path: string): TerminalApi {
           term.select(cur.col, b, (a - b) * cols + touchAnchor.col - cur.col + 1);
         }
       };
+      let selectionScrollDirection = 0;
+      let selectionScrollTimer: number | null = null;
+      let selectionDragPoint: { x: number; y: number } | null = null;
+      const stopSelectionAutoScroll = () => {
+        selectionScrollDirection = 0;
+        selectionDragPoint = null;
+        if (selectionScrollTimer !== null) {
+          window.clearInterval(selectionScrollTimer);
+          selectionScrollTimer = null;
+        }
+      };
+      const updateSelectionAutoScroll = (x: number, y: number) => {
+        const screenEl = container.querySelector(".xterm-screen");
+        if (!screenEl || term.rows === 0) {
+          stopSelectionAutoScroll();
+          return;
+        }
+        const rect = screenEl.getBoundingClientRect();
+        if (rect.height === 0) {
+          stopSelectionAutoScroll();
+          return;
+        }
+        selectionDragPoint = { x, y };
+        const edgeZone = Math.min(48, rect.height / 4);
+        selectionScrollDirection =
+          y < rect.top + edgeZone ? -1 : y > rect.bottom - edgeZone ? 1 : 0;
+        if (selectionScrollDirection === 0) {
+          stopSelectionAutoScroll();
+          return;
+        }
+        if (selectionScrollTimer !== null) return;
+        // Scroll only the local buffer here. scrollIntent can send arrow keys
+        // to a full-screen app, which would change the session while selecting.
+        selectionScrollTimer = window.setInterval(() => {
+          if (!touchAnchor || !selectionDragPoint || selectionScrollDirection === 0 || expanding) {
+            stopSelectionAutoScroll();
+            return;
+          }
+          const previousViewportY = term.buffer.active.viewportY;
+          term.scrollLines(selectionScrollDirection);
+          const cell = cellAt(selectionDragPoint.x, selectionDragPoint.y);
+          if (cell) applyTouchSelection(cell);
+          if (term.buffer.active.viewportY === previousViewportY) {
+            stopSelectionAutoScroll();
+          }
+        }, 60);
+      };
 
       const onTouchStart = (event: TouchEvent) => {
+        stopSelectionAutoScroll();
         stopFling();
         flingSamples.length = 0;
         const first = event.touches[0];
         if (!first || event.touches.length !== 1) return;
         const t = first;
-        touchStart = { x: t.clientX, y: t.clientY, at: Date.now() };
+        const cell = cellAt(t.clientX, t.clientY);
+        const bufferRow = cell ? term.buffer.active.viewportY + cell.screenRow : null;
+        const startedAt = Date.now();
+        touchStart = { x: t.clientX, y: t.clientY, at: startedAt, bufferRow };
+        touchMoved = false;
         lastSwipeY = null;
         swipeAccum = 0;
-        const cell = cellAt(t.clientX, t.clientY);
-        if (!cell) return;
         touchAnchor = null;
+        if (!cell) return;
         if (touchTimer !== null) window.clearTimeout(touchTimer);
         touchTimer = window.setTimeout(() => {
           touchTimer = null;
           if (!touchStart) return;
-          touchAnchor = { col: cell.col, row: cell.screenRow };
-          term.select(cell.col, cell.screenRow, 1);
-        }, 500);
+          const row = term.buffer.active.viewportY + cell.screenRow;
+          touchAnchor = { col: cell.col, row };
+          lastTap = null;
+          term.select(cell.col, row, 1);
+        }, TOUCH_LONG_PRESS_MS);
       };
       const onTouchMove = (event: TouchEvent) => {
         const first = event.touches[0];
-        if (!touchStart || !first || event.touches.length !== 1) return;
+        if (event.touches.length !== 1) {
+          stopSelectionAutoScroll();
+          return;
+        }
+        if (!touchStart || !first) return;
         const t = first;
-        const drift = Math.abs(t.clientX - touchStart.x) + Math.abs(t.clientY - touchStart.y);
-        if (touchTimer !== null && drift > 10) {
+        const drift = Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y);
+        if (touchTimer !== null && drift > TOUCH_SELECTION_SLOP_PX) {
+          touchMoved = true;
+          lastTap = null;
           window.clearTimeout(touchTimer);
           touchTimer = null;
+        } else if (drift > TOUCH_SELECTION_SLOP_PX) {
+          touchMoved = true;
+          lastTap = null;
         }
         if (!touchAnchor) {
           // No selection drag: the swipe scrolls the local buffer through
@@ -657,9 +760,14 @@ export function useTerminalWs(path: string): TerminalApi {
         // a selection drag owns the gesture — panning would fight it
         event.preventDefault();
         const cur = cellAt(t.clientX, t.clientY);
-        if (cur) applyTouchSelection(cur);
+        if (cur) {
+          applyTouchSelection(cur);
+          updateSelectionAutoScroll(t.clientX, t.clientY);
+        }
       };
       const onTouchEnd = () => {
+        stopSelectionAutoScroll();
+        const endedAt = Date.now();
         lastSwipeY = null;
         swipeAccum = 0;
         if (touchTimer !== null) {
@@ -667,11 +775,38 @@ export function useTerminalWs(path: string): TerminalApi {
           touchTimer = null;
         }
         if (touchAnchor) {
-          // Selection stays on screen after release — copying is an explicit
-          // Ctrl+C / key-row action, never a silent side effect.
+          // Selection stays on screen after release; copying is an explicit
+          // key-row action, never a silent side effect.
+          lastTap = null;
         } else {
-          if (touchStart && Date.now() - touchStart.at < 300) {
-            term.clearSelection();
+          const quickTap =
+            touchStart !== null &&
+            endedAt - touchStart.at < 300 &&
+            !touchMoved &&
+            touchStart.bufferRow !== null;
+          if (quickTap && touchStart && touchStart.bufferRow !== null) {
+            const previousTap = lastTap;
+            const doubleTapped =
+              previousTap !== null &&
+              endedAt - previousTap.at <= DOUBLE_TAP_INTERVAL_MS &&
+              touchStart.bufferRow === previousTap.bufferRow &&
+              Math.abs(touchStart.x - previousTap.x) <= DOUBLE_TAP_DISTANCE_PX;
+            if (doubleTapped) {
+              term.selectLines(touchStart.bufferRow, touchStart.bufferRow);
+              lastTap = null;
+            } else {
+              term.clearSelection();
+              lastTap = {
+                at: endedAt,
+                x: touchStart.x,
+                bufferRow: touchStart.bufferRow,
+              };
+            }
+          } else {
+            if (touchStart && endedAt - touchStart.at < 300) {
+              term.clearSelection();
+            }
+            lastTap = null;
           }
           // Release velocity decides whether the swipe keeps moving: the
           // momentum tail of a flick continues over the same channel.
@@ -698,9 +833,24 @@ export function useTerminalWs(path: string): TerminalApi {
         touchStart = null;
         touchAnchor = null;
       };
+      const onTouchCancel = () => {
+        stopSelectionAutoScroll();
+        stopFling();
+        if (touchTimer !== null) {
+          window.clearTimeout(touchTimer);
+          touchTimer = null;
+        }
+        touchStart = null;
+        touchAnchor = null;
+        lastTap = null;
+        lastSwipeY = null;
+        swipeAccum = 0;
+        flingSamples.length = 0;
+      };
       container.addEventListener("touchstart", onTouchStart, { passive: true });
       container.addEventListener("touchmove", onTouchMove, { passive: false });
       container.addEventListener("touchend", onTouchEnd, true);
+      container.addEventListener("touchcancel", onTouchCancel, true);
 
       // Web-style copy: Ctrl+C copies when a selection exists and otherwise
       // falls through to the shell as SIGINT — the key decides by state,
@@ -726,11 +876,17 @@ export function useTerminalWs(path: string): TerminalApi {
           copySelectionNow();
           return false;
         }
+        // Swallow the paste keys so xterm never turns them into the SYN control
+        // code (its keyboard map evaluates Ctrl+V to \x16, which the shell
+        // would receive as a literal ^V). The event is deliberately NOT
+        // cancelled: xterm's _keyDown returns early without preventDefault, so
+        // the browser still performs its own paste, and the capture-phase
+        // `paste` listener above is what gates it. Cancelling here instead
+        // would silence the gesture outright — no paste event, no text.
         if (
           matchesBinding(event, KEYBINDINGS.terminalPaste) ||
           matchesBinding(event, KEYBINDINGS.terminalPasteShift)
         ) {
-          readAndGate();
           return false;
         }
         if (matchesBinding(event, KEYBINDINGS.terminalBottom)) {
@@ -986,13 +1142,18 @@ export function useTerminalWs(path: string): TerminalApi {
 
       cleanup = () => {
         disposed = true;
+        stopSelectionAutoScroll();
         stopFling();
         if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
         if (reconcileSettleTimer !== null) window.clearTimeout(reconcileSettleTimer);
+        if (touchTimer !== null) window.clearTimeout(touchTimer);
         container.removeEventListener("contextmenu", contextMenu, true);
+        container.removeEventListener("contextmenu", suppressTouchContextMenu, true);
+        container.removeEventListener("paste", onPaste, true);
         container.removeEventListener("touchstart", onTouchStart);
         container.removeEventListener("touchmove", onTouchMove);
         container.removeEventListener("touchend", onTouchEnd, true);
+        container.removeEventListener("touchcancel", onTouchCancel, true);
         container.removeEventListener("wheel", onWheel, { capture: true });
         if (wheelTimer !== null) window.clearTimeout(wheelTimer);
         observer.disconnect();
@@ -1011,7 +1172,7 @@ export function useTerminalWs(path: string): TerminalApi {
     // scrollback changes re-run the connect (the init frame's declared
     // depth follows it); fontSize must not be here — it applies live
     // below, without dropping the PTY
-  }, [path, nonce, scrollback, sendResize]);
+  }, [path, nonce, scrollback, sendResize, gatePaste]);
 
   useEffect(() => {
     const term = termRef.current;
@@ -1049,19 +1210,11 @@ export function useTerminalWs(path: string): TerminalApi {
   const paste = useCallback(() => {
     void navigator.clipboard
       .readText()
-      .then((text) => {
-        if (!text) return;
-        if (!text.includes("\n")) {
-          termRef.current?.paste(text);
-          return;
-        }
-        pendingPasteRef.current = text;
-        setPasteConfirmation({ lines: text.split("\n").length });
-      })
+      .then(gatePaste)
       .catch(() => {
         // clipboard permission denied
       });
-  }, []);
+  }, [gatePaste]);
 
   const confirmPaste = useCallback(() => {
     const text = pendingPasteRef.current;

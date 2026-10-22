@@ -8,6 +8,10 @@ const toast = vi.fn();
 const prepareUpload = vi.fn();
 const resizeSummary = vi.fn();
 
+/** What the buffer lane answers with: the server-side name plus the absolute
+    path the send types. */
+const landed = (name: string) => ({ name, path: `/home/tao/.shellboard/uploads/s1/${name}` });
+
 // Shape-compatible stand-in for the real ApiError: the code only reads
 // `.status` and `.message` to decide which toast to show. Written out longhand
 // because tsconfig forbids parameter properties.
@@ -51,7 +55,7 @@ beforeEach(() => {
   prepareUpload.mockImplementation(async (file: File) => ({ file, resizedFrom: null }));
   resizeSummary.mockReset();
   resizeSummary.mockReturnValue(null);
-  useUploads.setState({ tasks: [] });
+  useUploads.setState({ tasks: [], pending: null });
 });
 
 const file = (name: string) => new File([name], name);
@@ -60,7 +64,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("the task list", () => {
   it("adds a task per file and removes it when the file is done", async () => {
-    uploadBinary.mockResolvedValue({ name: "n" });
+    uploadBinary.mockResolvedValue(landed("n"));
     const started = useUploads.getState().start({ sessionId: "s1", files: [file("a")] });
     // Synchronously visible before the first await resolves.
     expect(useUploads.getState().tasks.map((t) => [t.name, t.percent])).toEqual([["a", 0]]);
@@ -70,7 +74,7 @@ describe("the task list", () => {
   });
 
   it("shows one task per file, not one for the batch", async () => {
-    uploadBinary.mockResolvedValue({ name: "n" });
+    uploadBinary.mockResolvedValue(landed("n"));
     const done = useUploads.getState().start({
       sessionId: "s1",
       files: [file("a"), file("b")],
@@ -108,7 +112,7 @@ describe("the task list", () => {
     uploadBinary.mockImplementation((_target, _file, options) => {
       report = options.onProgress;
       return new Promise((resolve) => {
-        finish = () => resolve({ name: "n" });
+        finish = () => resolve(landed("n"));
       });
     });
     const done = useUploads.getState().start({ sessionId: "s1", files: [file("a")] });
@@ -124,8 +128,8 @@ describe("the task list", () => {
 });
 
 describe("toasts", () => {
-  it("offers Send for a buffer upload, which types the path into the shell", async () => {
-    uploadBinary.mockResolvedValue({ name: "buffer/1-a.txt" });
+  it("offers Send for a buffer upload, which asks before typing the path", async () => {
+    uploadBinary.mockResolvedValue(landed("buffer/1-a.txt"));
     send.mockResolvedValue({ ok: true });
     await useUploads.getState().start({ sessionId: "s1", files: [file("a")] });
     await settle();
@@ -137,12 +141,25 @@ describe("toasts", () => {
 
     action.onClick();
     await settle();
+    // The click opens the confirmation; it is not the send. The payload the
+    // dialog shows is the path the server reported, not the local file name.
+    expect(send).not.toHaveBeenCalled();
+    expect(useUploads.getState().pending).toEqual({
+      sessionId: "s1",
+      name: "buffer/1-a.txt",
+      path: "/home/tao/.shellboard/uploads/s1/buffer/1-a.txt",
+      size: 1,
+    });
+
+    useUploads.getState().confirmSend();
+    await settle();
     expect(send).toHaveBeenCalledWith("s1", "buffer/1-a.txt");
+    expect(useUploads.getState().pending).toBeNull();
     expect(toast.mock.calls.map((c) => c[0])).toContain("path sent to terminal");
   });
 
   it("does not offer Send for a repo-directory upload", async () => {
-    uploadBinary.mockResolvedValue({ name: "docs/a.txt" });
+    uploadBinary.mockResolvedValue({ name: "docs/a.txt", path: null });
     await useUploads.getState().start({
       sessionId: "s1",
       dir: "docs",
@@ -160,9 +177,7 @@ describe("toasts", () => {
       resizedFrom: { name: file.name, size: 5 * 1024 * 1024 },
     }));
     resizeSummary.mockReturnValue("5.0 MB → 480.0 KB");
-    uploadBinary.mockImplementation(async (_target: unknown, file: File) => ({
-      name: file.name,
-    }));
+    uploadBinary.mockImplementation(async (_target: unknown, file: File) => landed(file.name));
     send.mockResolvedValue({ ok: true });
 
     await useUploads.getState().start({ sessionId: "s1", files: [original] });
@@ -170,14 +185,26 @@ describe("toasts", () => {
     const call = toast.mock.calls.find((c) => String(c[0]).includes("compressed"));
     expect(call).toBeDefined();
     const action = call![2] as { label: string; onClick(): void };
-    expect(action.label).toBe("send original");
+    expect(action.label).toBe("Send original");
 
     action.onClick();
     await settle();
-    // The second PUT carries the untouched file, and the pane gets the buffer
-    // path of that copy (the lane uniquifies the colliding name).
+    // The second PUT carries the untouched file, and the dialog that opens
+    // names the buffer path of that copy (the lane uniquifies collisions).
     expect(uploadBinary).toHaveBeenLastCalledWith({ sessionId: "s1" }, original);
+    expect(useUploads.getState().pending).toEqual({
+      sessionId: "s1",
+      name: "IMG_0001.JPG",
+      path: "/home/tao/.shellboard/uploads/s1/IMG_0001.JPG",
+      size: 5 * 1024 * 1024,
+    });
+    // Nothing is typed until the dialog is confirmed.
+    expect(send).not.toHaveBeenCalled();
+
+    useUploads.getState().confirmSend();
+    await settle();
     expect(send).toHaveBeenCalledWith("s1", "IMG_0001.JPG");
+    expect(useUploads.getState().pending).toBeNull();
     expect(toast.mock.calls.map((c) => c[0])).toContain("path sent to terminal");
   });
 
@@ -187,7 +214,7 @@ describe("toasts", () => {
       resizedFrom: { name: original.name, size: 5 * 1024 * 1024 },
     }));
     resizeSummary.mockReturnValue("5.0 MB → 480.0 KB");
-    uploadBinary.mockResolvedValue({ name: "IMG_0001.JPG" });
+    uploadBinary.mockResolvedValue(landed("IMG_0001.JPG"));
     await useUploads.getState().start({ sessionId: "s1", files: [file("a")] });
     await settle();
     expect(toast.mock.calls.map((c) => c[0])).toEqual([
@@ -212,7 +239,7 @@ describe("toasts", () => {
   it("keeps going after a failed file so the rest of the batch lands", async () => {
     uploadBinary
       .mockRejectedValueOnce(new Error("boom"))
-      .mockResolvedValueOnce({ name: "b" });
+      .mockResolvedValueOnce(landed("b"));
     await useUploads.getState().start({ sessionId: "s1", files: [file("a"), file("b")] });
     await settle();
     expect(uploadBinary).toHaveBeenCalledTimes(2);
@@ -224,7 +251,7 @@ describe("toasts", () => {
     // reports the retry on its way to a result.
     uploadBinary.mockImplementationOnce((_target, _file, options) => {
       options.onRetry?.(2, "network error (sent 3.0 MB of 5.0 MB, connection dropped)");
-      return Promise.resolve({ name: "b" });
+      return Promise.resolve(landed("b"));
     });
     await useUploads.getState().start({ sessionId: "s1", files: [file("a")] });
     await settle();
@@ -237,7 +264,7 @@ describe("toasts", () => {
 
 describe("onSettled", () => {
   it("runs once after the whole batch, either way", async () => {
-    uploadBinary.mockResolvedValue({ name: "n" });
+    uploadBinary.mockResolvedValue(landed("n"));
     const onSettled = vi.fn();
     await useUploads.getState().start({
       sessionId: "s1",
@@ -246,5 +273,82 @@ describe("onSettled", () => {
     });
     await settle();
     expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The send-path confirmation: every path that reaches a pane goes through this
+// gate, so the store must hold the payload until the dialog is answered and
+// must never send twice.
+describe("the send confirmation", () => {
+  const entry = {
+    sessionId: "s1",
+    name: "IMG_0001.JPG",
+    path: "/home/tao/.shellboard/uploads/s1/IMG_0001.JPG",
+    size: 480 * 1024,
+  };
+
+  it("holds the entry without sending anything", () => {
+    useUploads.getState().requestSend(entry);
+    expect(useUploads.getState().pending).toEqual(entry);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("sends once on confirm and clears the payload", async () => {
+    send.mockResolvedValue({ ok: true });
+    useUploads.getState().requestSend(entry);
+    useUploads.getState().confirmSend();
+    await settle();
+    expect(send).toHaveBeenCalledWith("s1", "IMG_0001.JPG");
+    expect(useUploads.getState().pending).toBeNull();
+    expect(toast.mock.calls.map((c) => c[0])).toContain("path sent to terminal");
+  });
+
+  it("cannot send the same payload twice", async () => {
+    send.mockResolvedValue({ ok: true });
+    useUploads.getState().requestSend(entry);
+    useUploads.getState().confirmSend();
+    // A second Enter arrives before the request has even left: the payload is
+    // already gone, so there is nothing left to send.
+    useUploads.getState().confirmSend();
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards without sending", () => {
+    useUploads.getState().requestSend(entry);
+    useUploads.getState().cancelSend();
+    expect(useUploads.getState().pending).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when there is nothing pending", async () => {
+    useUploads.getState().confirmSend();
+    await settle();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the server's message when the send fails", async () => {
+    send.mockRejectedValue(new FakeApiError(500, "tmux is gone"));
+    useUploads.getState().requestSend(entry);
+    useUploads.getState().confirmSend();
+    await settle();
+    expect(useUploads.getState().pending).toBeNull();
+    expect(toast.mock.calls[0]).toEqual(["tmux is gone", "error"]);
+  });
+
+  it("refuses to confirm a payload the server never named", async () => {
+    uploadBinary.mockResolvedValue({ name: "a.txt", path: null });
+    await useUploads.getState().start({ sessionId: "s1", files: [file("a")] });
+    await settle();
+    const action = toast.mock.calls.find((c) => c[0] === "a.txt uploaded")![2] as {
+      onClick(): void;
+    };
+    action.onClick();
+    await settle();
+    expect(useUploads.getState().pending).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(toast.mock.calls.map((c) => c[0])).toContain(
+      "upload answered without a path — nothing sent",
+    );
   });
 });

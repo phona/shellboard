@@ -4,10 +4,11 @@ import { createPortal } from "react-dom";
 import type { SessionWithRuntime } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { IconAttach, IconCopy, IconFontMinus, IconFontPlus, IconFullscreen, IconHistory, IconNewLine, IconPaste, IconSearch } from "../../components/icons";
-import { Modal } from "../../components/Modal";
+import { SendConfirmModal } from "../../components/SendConfirm";
 import { toast } from "../../state/toasts";
 import { useUi } from "../../state/store";
 import { useUploads } from "../../state/uploads";
+import { formatSize } from "../../util/format";
 import { useMediaQuery } from "../../util/useMediaQuery";
 import type { TerminalStatus } from "./useTerminalWs";
 import { useTerminalWs } from "./useTerminalWs";
@@ -115,6 +116,11 @@ export function TerminalView({
     variant === "agent" && exited
       ? "session exited"
       : STATUS_BANNER[terminal.status];
+  // The dialog reports the exact payload. The preview carries line 1, so the
+  // remainder is everything the user cannot see yet — and it is zero when the
+  // first line was nothing but control characters.
+  const pendingPaste = terminal.pasteConfirmation;
+  const hiddenLines = pendingPaste ? pendingPaste.lines - (pendingPaste.preview ? 1 : 0) : 0;
   const mobileAgentHeaderMerged = isMobile && variant === "agent" && !fullscreen;
   const mobileActionsPortaled = mobileAgentHeaderMerged && !!mobileActionsTarget;
   const mobileActions = (
@@ -291,22 +297,15 @@ export function TerminalView({
 
       <div className="terminal-host" ref={terminal.containerRef} />
 
-      {terminal.pasteConfirmation && (
-        <Modal title="Paste multi-line text" onClose={terminal.cancelPaste}>
-          <div>
-            The clipboard contains <strong>{terminal.pasteConfirmation.lines} lines</strong>.
-            Pasting feeds them to the terminal line by line — each line may execute. Review
-            the content before confirming.
-          </div>
-          <div className="modal-actions">
-            <button type="button" onClick={terminal.cancelPaste}>
-              Cancel
-            </button>
-            <button type="button" className="btn primary" onClick={terminal.confirmPaste}>
-              Paste
-            </button>
-          </div>
-        </Modal>
+      {pendingPaste && (
+        <SendConfirmModal
+          title={`Send ${pendingPaste.lines} lines to the shell?`}
+          payload={pendingPaste.preview}
+          meta={`${hiddenLines} ${hiddenLines === 1 ? "line" : "lines"} not shown · ${formatSize(pendingPaste.bytes)}`}
+          risk="Multi-line pastes can execute line by line — review before sending."
+          onConfirm={terminal.confirmPaste}
+          onCancel={terminal.cancelPaste}
+        />
       )}
 
       {banner && (

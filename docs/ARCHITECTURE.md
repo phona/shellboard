@@ -239,6 +239,8 @@ WebSocket 断开 / 浏览器关闭 → 只杀 node-pty(tmux client),不碰 tmux 
 
 Shellboard 不解析终端状态、不自主发起任何 PTY 输入(见开头红线)。唯一 carve-out 与 History 按钮同类:**用户显式点击**触发的 `tmux send-keys -l -- <绝对路径>`——纯文本、无换行、不回车,字节与键盘输入不可区分,提交永远由用户完成。禁止任何变体:自动粘贴、定时发送、带 `Enter`、读取屏幕来决定时机。"现在能不能打字"这个问题要么读屏(禁止)要么瞎猜(会打坏 vim/半行命令),所以时机责任永远在用户:终端就在眼前,点击前可见。
 
+**发送前确认**:每次路径注入都经过同一个阻塞式弹窗(`components/SendConfirm.tsx`,与终端多行粘贴的 gate 同一组件):展示将要键入的绝对路径、文件名与字节数,`Enter` 发送、`Esc` 丢弃。这不改变 carve-out 的条款——每次发送仍是且仅是一次用户显式动作,`send-keys -l` 仍不带换行不带回车;弹窗只是把"点击前可见"从终端屏幕搬到对话框里,让上传完成一段时间后(或从缓冲区列表里)发起的那一次发送同样可见。附件**上传**不需要确认:它只落盘,不进 pane。
+
 ### D7 缓冲区 pane 与滚动(no-alt-screen attach + 接入历史种子)
 
 live 画面的传输是忠实的字节搬运,累积机制在 **tmux 侧**:shellboard 的 tmux 以 `terminal-overrides` 移除 `smcup`/`rmcup`/`indn`(注意用 terminfo 小写名,tmux 内部名 Smcup/Rmcup 在 overrides 中不匹配),web 客户端因此被 tmux 当作**无备用屏的普通滚动终端**:
