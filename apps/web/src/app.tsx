@@ -7,9 +7,11 @@ import { UploadManager } from "./components/UploadManager";
 import { useUi } from "./state/store";
 import { ToastStack } from "./components/ToastStack";
 import { isTypingTarget, matchesBinding, KEYBINDINGS } from "./util/dom";
+import { useCommandMigration } from "./state/useCommands";
 
 export function App() {
   useEvents();
+  useCommandMigration();
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

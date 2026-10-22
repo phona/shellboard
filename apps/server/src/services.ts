@@ -6,6 +6,7 @@ import { EventBus } from "./events/bus.js";
 import { ActivityTracker } from "./activity/tracker.js";
 import { ActivityObserver } from "./activity/observer.js";
 import { ProjectService } from "./projects/projectService.js";
+import { CommandService } from "./sessions/commandService.js";
 import { SessionService } from "./sessions/sessionService.js";
 import { TerminalBridge } from "./terminal/bridge.js";
 import { ToolTerminalManager } from "./terminal/toolTerminal.js";
@@ -23,6 +24,7 @@ export interface Services {
   observer: ActivityObserver;
   projects: ProjectService;
   sessions: SessionService;
+  commands: CommandService;
   bridge: TerminalBridge;
   tools: ToolTerminalManager;
   git: GitService;
@@ -40,6 +42,7 @@ export function buildServices(config: ServerConfig): Services {
   const projects = new ProjectService(db);
   const uploads = new UploadService(path.join(config.homeDir, "uploads"));
   const sessions = new SessionService(db, projects, tmux, tracker, bus, uploads);
+  const commands = new CommandService(db);
   const notifier = new NotifyService(config, tmux, sessions, bus);
   // state-driven notify (D8): activity transitions feed the hook fan-out
   tracker.setTransitionListener((sessionId, prev, next) => {
@@ -54,6 +57,7 @@ export function buildServices(config: ServerConfig): Services {
     observer,
     projects,
     sessions,
+    commands,
     bridge: new TerminalBridge(config.tmuxSocket, tracker, tmux),
     tools: new ToolTerminalManager(),
     git: new GitService(),

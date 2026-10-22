@@ -161,7 +161,18 @@ interface Session {
   cwd: string;
   agentType: "codex" | "claude" | "opencode" | "gemini" | "shell" | "custom";
   command: string[];
+  /** 启动环境变量:创建时从 preset(或请求)快照,restart 时重新施加,见 D9 */
+  env: Record<string, string>;
   tmuxName: string;   // 创建后不可变
+  createdAt: string;
+}
+
+/** 用户注册的启动命令(D9)。服务端持久化,不是浏览器本地状态。 */
+interface Command {
+  id: string;
+  name: string;        // 唯一
+  command: string;     // 单行命令,服务端按空白切分为 argv
+  env: Record<string, string>;
   createdAt: string;
 }
 
@@ -253,8 +264,25 @@ Shellboard 永远不从终端字节推断"任务完成"(bytes are opaque);D3 的
 
 **hooks 执行边界(两条触发路径共用)**:`~/.shellboard/notify/` 下每个 `*.js`/`*.mjs` 在事件时 spawn(payload 与 WS 事件同形、走 stdin;子进程崩溃隔离,每次重读目录,文件名加 `.disabled.` 即停用;超时 SIGKILL;hook 的 cwd 为 session.cwd,注入 `SHELLBOARD_SESSION_ID/NAME/CWD`)。能运行的只有用户放进该目录的文件,触发源只能决定 hook 是否运行,不能决定运行什么——不是通用 exec endpoint。不做 per-project hook 目录(克隆仓库即执行其代码是供应链风险)。链路上任何失败都不影响 agent 进程与 shellboard。
 
-## 5. API Surface(全集)
+### D9 注册命令服务端化 + 启动环境变量
 
+注册命令(Registered commands)是**服务端持久化**的启动 preset,不是浏览器本地状态。早期版本存在 `localStorage["shellboard.commands"]`:换浏览器/清站点数据即丢失,且无法承载环境变量。现在落在 SQLite `commands` 表(`CommandService` + `/api/commands` CRUD),首次加载时把旧的本地 preset 一次性导入后清除本地键。
+
+**环境变量是 preset 的一等字段**。同一套 `claude` 二进制,配不同的 `ANTHROPIC_MODEL` / `ANTHROPIC_BASE_URL` 就是两个 preset:
+
+```text
+claude-sonnet   claude            ANTHROPIC_MODEL=sonnet
+claude-opus     claude            ANTHROPIC_MODEL=opus
+```
+
+- **投递方式**:`TmuxService.newSession` 为每个变量发一个 `new-session -e K=V`(需要 tmux ≥ 3.3)。`-e` 写的是 **session environment**,pane 进程直接继承,之后在该 session 里新开的 window/pane 同样继承;这比用 `env K=V …` 包裹 argv 更干净(不篡改 argv、`show-environment` 可见)。execa 直接传 argv、不经 shell,所以值里带空格不需要引号。
+- **快照而非引用**:创建 session 时把 `command` + `env` 写进 `sessions.env` 列,之后修改或删除 preset 都不影响已启动的 session;`restart` 用快照重新施加(pane 是重建的,不重新施加就会静默丢变量)。
+- **适用范围**:env 对任何 `agentType` 生效,不只是 custom —— "Claude Code + ANTHROPIC_MODEL=sonnet" 不需要先建 preset,新建会话弹窗里直接填。
+- **校验在 contracts**(两端同一份规则):key 必须匹配 `^[A-Za-z_][A-Za-z0-9_]*$`;拒绝 `TMUX`/`TMUX_PANE`(会打断 D8 的 pane 归属与 pane 内 tmux 探测)、`TERM`(打断渲染)、`HOME`/`SHELL`/`TMPDIR`(静默搬走 agent 自己的状态)与 `SHELLBOARD_` 前缀;每条命令最多 24 个变量、值上限 4096 字符。`PATH` 故意允许:把 `PATH=/opt/claude-2/bin:$PATH` 钉死是真实需求,配错只毁用户自己的 pane,改 preset 即可恢复。
+- **密钥边界**:env 值按明文经 API 返回、明文存 SQLite,与 `shellboard.db` 本身、token/cookie 鉴权、默认回环绑定的既有威胁模型一致;**任何日志都不记录 env 值**(service 与 route 都不记请求体)。需要"只写不可读"的 per-variable secret 标记是后续可选项,不是 v1 的一部分。
+- 不做:per-project 命令、命令变更的 WS 广播(多标签刷新由 `refetchOnWindowFocus` 覆盖)、以及任何超出 `SessionService.create` 既有校验的执行面。
+
+## 5. API Surface(全集)
 ```text
 GET    /api/projects
 POST   /api/projects
@@ -266,6 +294,11 @@ POST   /api/sessions
 PATCH  /api/sessions/:id              # rename 等
 DELETE /api/sessions/:id              # kill
 POST   /api/sessions/:id/restart
+
+GET    /api/commands                  # 注册的启动命令(D9)
+POST   /api/commands                  # name 唯一,冲突 409
+PATCH  /api/commands/:id
+DELETE /api/commands/:id
 
 WS     /api/sessions/:id/terminal     # 二进制帧 + JSON 控制帧(resize/ping)
 
@@ -312,5 +345,6 @@ Web Shell + 文件系统写 + Git 写
 - 应用层:token 登录 + HttpOnly cookie、WebSocket Origin 校验、CSRF 保护、全路由(含 WS upgrade)鉴权。绑定非回环地址且未设置 `SHELLBOARD_TOKEN` 时,启动自动生成随机 token 并打印(Jupyter/code-server 模式),不允许无鉴权暴露。
 - `/api/notify` 用独立的 notify token:服务端启动时生成并落盘 `~/.shellboard/notify-token`(0600),`shellboard-notify` CLI 自动读取;web 端走 cookie。该路由会触发用户 hook 脚本,即使 cookie auth 关闭(本地回环)也要求 token,防浏览器 drive-by POST。
 - 所有 path 经 `resolve` + 逐段 `realpath` 验证仍位于 session `cwd` 内,拒绝 `../` 与 symlink escape(见 D1)。
-- 所有执行动作走显式 service(SessionService / GitService / FileService),参数经 Zod 校验;Custom session command 仅在用户主动创建时允许,不暴露成通用远程 exec。
+- 所有执行动作走显式 service(SessionService / GitService / FileService / CommandService),参数经 Zod 校验;Custom session command 仅在用户主动创建时允许,不暴露成通用远程 exec。
+- 启动环境变量(D9)按明文存储与返回,与 `shellboard.db` 同威胁模型;**env 值不进任何日志**。
 - 日志只记录:session lifecycle、PTY connect/disconnect、tmux errors、git 操作、文件写删、auth 事件。**绝不记录终端输入输出,默认不偷偷做 transcript。**

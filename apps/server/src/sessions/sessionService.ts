@@ -4,6 +4,7 @@ import { execa } from "execa";
 import { AGENT_DEFAULT_COMMAND } from "@shellboard/contracts";
 import type {
   CreateSessionInput,
+  EnvVarMap,
   Session,
   SessionWithRuntime,
   UpdateSessionInput,
@@ -25,6 +26,7 @@ interface SessionRow {
   cwd: string;
   agent_type: string;
   command: string;
+  env: string;
   tmux_name: string;
   created_at: string;
 }
@@ -37,9 +39,25 @@ function toSession(row: SessionRow): Session {
     cwd: row.cwd,
     agentType: row.agent_type as Session["agentType"],
     command: JSON.parse(row.command) as string[],
+    env: parseEnv(row.env),
     tmuxName: row.tmux_name,
     createdAt: row.created_at,
   };
+}
+
+/** Rows written before the env column existed (migration default `{}`) and any
+    hand-edited row read back as an empty map rather than failing the whole
+    list. */
+function parseEnv(raw: string): EnvVarMap {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as EnvVarMap;
+    }
+    return {};
+  } catch {
+    return {};
+  }
 }
 
 async function commandExists(binary: string): Promise<boolean> {
@@ -132,18 +150,19 @@ export class SessionService {
       cwd,
       agentType: input.agentType,
       command,
+      env: input.env ?? {},
       tmuxName: newId("sb"),
       createdAt: new Date().toISOString(),
     };
     try {
-      await this.tmux.newSession(session.tmuxName, cwd, command);
+      await this.tmux.newSession(session.tmuxName, cwd, command, session.env);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw httpError(500, `tmux new-session failed: ${message}`);
     }
     this.db
       .prepare(
-        "INSERT INTO sessions (id, project_id, name, cwd, agent_type, command, tmux_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (id, project_id, name, cwd, agent_type, command, env, tmux_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         session.id,
@@ -152,6 +171,7 @@ export class SessionService {
         session.cwd,
         session.agentType,
         JSON.stringify(session.command),
+        JSON.stringify(session.env),
         session.tmuxName,
         session.createdAt,
       );
@@ -164,7 +184,10 @@ export class SessionService {
     const session = this.get(id);
     await this.tmux.killSession(session.tmuxName);
     try {
-      await this.tmux.newSession(session.tmuxName, session.cwd, session.command);
+      // The pane is recreated from scratch, so the stored launch env has to be
+      // re-applied: without it a restart would silently drop the variables the
+      // session was created with (D9).
+      await this.tmux.newSession(session.tmuxName, session.cwd, session.command, session.env);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       throw httpError(500, `tmux new-session failed: ${message}`);

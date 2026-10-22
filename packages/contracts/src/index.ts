@@ -37,6 +37,90 @@ export const AGENT_DEFAULT_COMMAND: Record<AgentType, string[] | null> = {
   custom: null,
 };
 
+/**
+ * Environment variables attached to a launch (registered command preset or a
+ * one-off session). Delivered to the tmux pane via `new-session -e K=V` (D9),
+ * so the agent process and every pane opened later in that session inherit
+ * them.
+ *
+ * Keys are POSIX-safe names. A small deny-list protects the variables tmux and
+ * the pane runtime own: overriding TMUX/TMUX_PANE breaks notify attribution
+ * (D8) and in-pane tmux detection, TERM breaks rendering, and HOME/SHELL/TMPDIR
+ * silently relocate the agent's own state. PATH stays allowed on purpose — a
+ * power user pinning `PATH=/opt/claude-2/bin:$PATH` is a real use case, and a
+ * wrong value only breaks that user's own pane (fixable by editing the preset).
+ */
+export const ENV_DENYLIST: readonly string[] = [
+  "TMUX",
+  "TMUX_PANE",
+  "TERM",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "PWD",
+  "SHELL",
+  "TMPDIR",
+];
+
+/** Variables per launch, key length, and value length. Enough for a handful of
+    model/endpoint overrides; small enough that the JSON column stays readable. */
+export const MAX_ENV_VARS = 24;
+export const MAX_ENV_KEY_CHARS = 64;
+export const MAX_ENV_VALUE_CHARS = 4096;
+
+export const EnvKeySchema = z
+  .string()
+  .min(1)
+  .max(MAX_ENV_KEY_CHARS)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be a POSIX variable name")
+  .refine(
+    (key) => !ENV_DENYLIST.includes(key) && !key.startsWith("SHELLBOARD_"),
+    "reserved for tmux/shellboard runtime",
+  );
+
+export const EnvValueSchema = z
+  .string()
+  .max(MAX_ENV_VALUE_CHARS)
+  .refine((value) => !value.includes("\u0000"), "must not contain NUL");
+
+export const EnvVarMapSchema = z
+  .record(EnvKeySchema, EnvValueSchema)
+  .refine((map) => Object.keys(map).length <= MAX_ENV_VARS, {
+    message: `at most ${MAX_ENV_VARS} variables`,
+  });
+export type EnvVarMap = z.infer<typeof EnvVarMapSchema>;
+
+/**
+ * A user-registered launch command (D9). Persisted server-side; the name is
+ * unique, and launching a session from a preset snapshots `command` + `env`
+ * onto the session row, so editing or deleting the preset later never mutates
+ * a running session.
+ */
+export const CommandSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  command: z.string(),
+  env: EnvVarMapSchema,
+  createdAt: z.string(),
+});
+export type Command = z.infer<typeof CommandSchema>;
+
+/** `env` is optional on every input and normalized to `{}` by the services:
+    zod does not apply an object-key default when the key is absent. */
+export const CreateCommandInputSchema = z.object({
+  name: z.string().min(1).max(64),
+  command: z.string().min(1).max(2000),
+  env: EnvVarMapSchema.optional(),
+});
+export type CreateCommandInput = z.infer<typeof CreateCommandInputSchema>;
+
+export const UpdateCommandInputSchema = z.object({
+  name: z.string().min(1).max(64).optional(),
+  command: z.string().min(1).max(2000).optional(),
+  env: EnvVarMapSchema.optional(),
+});
+export type UpdateCommandInput = z.infer<typeof UpdateCommandInputSchema>;
+
 export const ActivitySchema = z.enum(["working", "cooling", "idle", "exited"]);
 export type Activity = z.infer<typeof ActivitySchema>;
 
@@ -55,6 +139,9 @@ export const SessionSchema = z.object({
   cwd: z.string(),
   agentType: AgentTypeSchema,
   command: z.array(z.string()),
+  /** Launch environment, snapshotted from the preset (or the request) at
+      creation time and re-applied on restart (D9). */
+  env: EnvVarMapSchema,
   tmuxName: z.string(),
   createdAt: z.string(),
 });
@@ -225,6 +312,8 @@ export const CreateSessionInputSchema = z.object({
   cwd: z.string().optional(),
   agentType: AgentTypeSchema,
   command: z.string().optional(),
+  /** Applied to the pane for any agentType, not just custom (D9). */
+  env: EnvVarMapSchema.optional(),
 });
 export type CreateSessionInput = z.infer<typeof CreateSessionInputSchema>;
 

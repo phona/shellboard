@@ -8,6 +8,7 @@ import { registerAuth } from "./auth.js";
 import { attachWsHub } from "./terminal/wsHub.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
+import { registerCommandRoutes } from "./routes/commands.js";
 import { registerGitRoutes } from "./routes/git.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerUploadRoutes } from "./routes/uploads.js";
@@ -41,6 +42,7 @@ export async function buildApp(
   await registerAuth(app, services.config);
   registerProjectRoutes(app, services);
   registerSessionRoutes(app, services);
+  registerCommandRoutes(app, services);
   registerGitRoutes(app, services);
   registerFileRoutes(app, services);
   registerUploadRoutes(app, services);

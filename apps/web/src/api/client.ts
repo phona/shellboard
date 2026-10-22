@@ -1,5 +1,7 @@
 import { MAX_UPLOAD_BYTES } from "@shellboard/contracts";
 import type {
+  Command,
+  CreateCommandInput,
   CreateFileInput,
   CreateProjectInput,
   CreateSessionInput,
@@ -13,6 +15,7 @@ import type {
   SaveFileInput,
   Session,
   SessionWithRuntime,
+  UpdateCommandInput,
   UploadList,
 } from "@shellboard/contracts";
 import { formatSize } from "../util/format.js";
@@ -90,6 +93,15 @@ export const api = {
       http<{ ok: boolean }>(`/api/sessions/${id}`, { method: "DELETE" }),
     restart: (id: string) =>
       http<SessionWithRuntime>(`/api/sessions/${id}/restart`, { method: "POST" }),
+  },
+  commands: {
+    list: () => http<Command[]>("/api/commands"),
+    create: (input: CreateCommandInput) =>
+      http<Command>("/api/commands", { method: "POST", json: input }),
+    update: (id: string, input: UpdateCommandInput) =>
+      http<Command>(`/api/commands/${id}`, { method: "PATCH", json: input }),
+    remove: (id: string) =>
+      http<{ ok: boolean }>(`/api/commands/${id}`, { method: "DELETE" }),
   },
   git: {
     status: (id: string) => http<GitStatus>(`/api/sessions/${id}/git/status`),

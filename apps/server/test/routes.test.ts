@@ -8,6 +8,104 @@ import { afterAllCleanup, createServices, makeTempDir } from "./helpers";
 
 afterAllCleanup();
 
+it("serves the registered-command CRUD surface (D9)", async () => {
+  const services = await createServices();
+  const app = await buildApp(services, { logger: false });
+
+  const empty = await app.inject({ method: "GET", url: "/api/commands" });
+  expect(empty.statusCode).toBe(200);
+  expect(empty.json()).toEqual([]);
+
+  const created = await app.inject({
+    method: "POST",
+    url: "/api/commands",
+    payload: {
+      name: "claude-sonnet",
+      command: "claude --model sonnet",
+      env: { ANTHROPIC_MODEL: "sonnet" },
+    },
+  });
+  expect(created.statusCode).toBe(201);
+  const command = created.json();
+
+  const duplicate = await app.inject({
+    method: "POST",
+    url: "/api/commands",
+    payload: { name: "claude-sonnet", command: "claude" },
+  });
+  expect(duplicate.statusCode).toBe(409);
+
+  const patched = await app.inject({
+    method: "PATCH",
+    url: `/api/commands/${command.id}`,
+    payload: { env: { ANTHROPIC_MODEL: "opus" } },
+  });
+  expect(patched.statusCode).toBe(200);
+  expect(patched.json().env).toEqual({ ANTHROPIC_MODEL: "opus" });
+
+  // Contract validation, not just service validation: the denylist and the key
+  // shape are enforced at the route boundary.
+  for (const env of [{ TMUX: "x" }, { "1BAD": "x" }, { "": "x" }]) {
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/commands",
+      payload: { name: `bad-${JSON.stringify(env)}`, command: "echo hi", env },
+    });
+    expect(rejected.statusCode).toBe(400);
+  }
+
+  const unknown = await app.inject({
+    method: "PATCH",
+    url: "/api/commands/c_missing",
+    payload: { name: "x" },
+  });
+  expect(unknown.statusCode).toBe(404);
+
+  const listed = await app.inject({ method: "GET", url: "/api/commands" });
+  expect(listed.json()).toHaveLength(1);
+
+  const removed = await app.inject({ method: "DELETE", url: `/api/commands/${command.id}` });
+  expect(removed.statusCode).toBe(200);
+  expect((await app.inject({ method: "GET", url: "/api/commands" })).json()).toEqual([]);
+
+  await app.close();
+});
+
+it("accepts a launch env on the session create route (D9)", async () => {
+  const services = await createServices();
+  const app = await buildApp(services, { logger: false });
+  const dir = makeTempDir();
+  const projectRes = await app.inject({
+    method: "POST",
+    url: "/api/projects",
+    payload: { name: "envflow", rootPath: dir },
+  });
+  const projectId = projectRes.json().id as string;
+
+  const created = await app.inject({
+    method: "POST",
+    url: "/api/sessions",
+    payload: {
+      projectId,
+      name: "env-session",
+      agentType: "shell",
+      env: { ANTHROPIC_MODEL: "sonnet" },
+    },
+  });
+  expect(created.statusCode).toBe(201);
+  expect(created.json().session.env).toEqual({ ANTHROPIC_MODEL: "sonnet" });
+
+  const listed = await app.inject({ method: "GET", url: "/api/sessions" });
+  const listed2 = listed.json().sessions as Array<{ session: { env: unknown } }>;
+  expect(listed2.some((item) => item.session.env)).toBe(true);
+
+  await app.inject({
+    method: "DELETE",
+    url: `/api/sessions/${created.json().session.id}`,
+  });
+  await app.close();
+});
+
 it("serves the full REST flow over real services", async () => {
   const services = await createServices();
   const app = await buildApp(services, { logger: false });
@@ -131,8 +229,7 @@ it("browses directories read-only for the project picker", async () => {
   await app.close();
 });
 
-it("requires the token when SHELLBOARD_TOKEN is set", async () => {
-  const config = { ...loadConfig(), token: "secret-token" };
+it("requires the token when SHELLBOARD_TOKEN is set", async () => {  const config = { ...loadConfig(), token: "secret-token" };
   const services = buildServices(config);
   const app = await buildApp(services, { logger: false });
 

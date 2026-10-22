@@ -1,10 +1,19 @@
 import { execa } from "execa";
+import type { EnvVarMap } from "@shellboard/contracts";
 import { httpError } from "../errors.js";
 
 export interface TmuxSessionInfo {
   name: string;
   activitySeconds: number | null;
   attached: number;
+}
+
+/** `new-session -e` pairs for a launch environment, sorted so the command line
+    is reproducible (and testable) regardless of key order. */
+function envArgs(env: EnvVarMap): string[] {
+  return Object.keys(env)
+    .sort()
+    .flatMap((key) => ["-e", `${key}=${env[key]}`]);
 }
 
 export class TmuxService {
@@ -86,8 +95,15 @@ export class TmuxService {
    * Starts a detached session. `-f /dev/null` only applies when this command
    * boots a fresh tmux server: it guarantees a config-free, deterministic
    * server (user tmux.conf must not affect the shellboard socket, D2).
+   *
+   * `env` becomes one `-e K=V` pair per variable, placed before the shell
+   * command (D9): the session environment is what the pane process inherits, so
+   * the variables also reach panes/windows opened later in this session. Values
+   * may contain spaces — execa passes argv directly, so no shell quoting is
+   * involved. Requires tmux >= 3.3 (`-e` for new-session); an empty map emits
+   * no flags and leaves the invocation byte-identical to before.
    */
-  async newSession(name: string, cwd: string, command: string[]): Promise<void> {
+  async newSession(name: string, cwd: string, command: string[], env: EnvVarMap = {}): Promise<void> {
     // One invocation, three commands: boot the server (no-op if running),
     // raise the global history-limit, then create the session. history-limit
     // is a window option read when the pane is created — setting it after
@@ -114,6 +130,7 @@ export class TmuxService {
         name,
         "-c",
         cwd,
+        ...envArgs(env),
         ...command,
       ),
     );

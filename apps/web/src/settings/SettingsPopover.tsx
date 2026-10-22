@@ -1,7 +1,21 @@
 import { useEffect, useRef, useState } from "react";
+import type { Command } from "@shellboard/contracts";
 import { getThemeMode, setThemeMode, type ThemeMode } from "../state/theme";
-import { useCommands } from "../state/commands";
+import {
+  useCommands,
+  useCreateCommand,
+  useRemoveCommand,
+  useUpdateCommand,
+} from "../state/useCommands";
+import {
+  envSummary,
+  pairsToRecord,
+  recordToPairs,
+  type EnvPair,
+} from "../state/env";
 import { useUi } from "../state/store";
+import { ApiError } from "../api/client";
+import { EnvEditor } from "../components/EnvEditor";
 
 export function SettingsPopover({ inline = false }: { inline?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -124,58 +138,213 @@ function SettingsControls({
   );
 }
 
-/** Register launch commands once, pick them from the new-session dialog. */
+/** Register launch commands once, pick them from the new-session dialog.
+    Persisted server-side (D9), so the list survives a browser change and can
+    carry environment variables. */
 function CommandRegistry() {
-  const commands = useCommands((state) => state.commands);
-  const remove = useCommands((state) => state.remove);
+  const query = useCommands();
+  const commands = query.data ?? [];
+  const create = useCreateCommand();
+  const update = useUpdateCommand();
+  const remove = useRemoveCommand();
+
+  const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
+  const [env, setEnv] = useState<EnvPair[]>([]);
+  /** Set by the env editor: a bulk line that is not an assignment cannot be
+      represented as a pair, so Save stays off until the text parses. */
+  const [envValid, setEnvValid] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const busy = create.isPending || update.isPending;
+
+  function reset() {
+    setEditing(null);
+    setName("");
+    setCommand("");
+    setEnv([]);
+    setEnvValid(true);
+    setError(null);
+  }
+
+  function startEdit(item: Command) {
+    setEditing(item.id);
+    setName(item.name);
+    setCommand(item.command);
+    setEnv(recordToPairs(item.env));
+    setEnvValid(true);
+    setError(null);
+  }
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const cmd = command.trim();
+    if (!cmd) return;
+    const payload = {
+      name: name.trim() || cmd.split(/\s+/)[0]?.toLowerCase() || "command",
+      command: cmd,
+      env: pairsToRecord(env),
+    };
+    setError(null);
+    const run = editing
+      ? update.mutateAsync({ id: editing, ...payload })
+      : create.mutateAsync(payload);
+    void run.then(reset).catch((err: unknown) => {
+      setError(err instanceof ApiError ? err.message : "save failed");
+    });
+  };
 
   return (
     <div className="command-registry">
       <div className="popover-title">Registered commands</div>
-      {commands.map((item) => (
-        <div className="command-row" key={item.name}>
-          <span className="command-name" title={item.command}>
-            {item.name}
-          </span>
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label={`Remove ${item.name}`}
-            onClick={() => remove(item.name)}
-          >
-            ×
-          </button>
+      {query.isPending && <div className="command-empty">loading…</div>}
+      {query.isError && (
+        <div className="form-error">
+          {query.error instanceof ApiError ? query.error.message : "could not load commands"}
         </div>
-      ))}
-      <form
-        className="command-add"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const cmd = command.trim();
-          if (!cmd) return;
-          const fallback = cmd.split(/\s+/)[0]?.toLowerCase() ?? "command";
-          useCommands.getState().add(name.trim() || fallback, cmd);
-          setName("");
-          setCommand("");
-        }}
-      >
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="name (optional)"
+      )}
+      {commands.map((item) =>
+        editing === item.id ? (
+          <CommandForm
+            key={item.id}
+            name={name}
+            command={command}
+            env={env}
+            envValid={envValid}
+            error={error}
+            busy={busy}
+            submitLabel="Save"
+            onName={setName}
+            onCommand={setCommand}
+            onEnv={setEnv}
+            onEnvValidity={setEnvValid}
+            onSubmit={submit}
+            onCancel={reset}
+          />
+        ) : (
+          <div className="command-row" key={item.id}>
+            <span className="command-name" title={`${item.command}${envTitle(item.env)}`}>
+              {item.name}
+              {item.env && Object.keys(item.env).length > 0 && (
+                <span className="command-env">{envSummary(item.env)}</span>
+              )}
+            </span>
+            <span className="command-actions">
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={`Edit ${item.name}`}
+                onClick={() => startEdit(item)}
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={`Remove ${item.name}`}
+                onClick={() => remove.mutate(item.id)}
+              >
+                ×
+              </button>
+            </span>
+          </div>
+        ),
+      )}
+      {editing === null && (
+        <CommandForm
+          name={name}
+          command={command}
+          env={env}
+          envValid={envValid}
+          error={error}
+          busy={busy}
+          submitLabel="Add"
+          onName={setName}
+          onCommand={setCommand}
+          onEnv={setEnv}
+          onEnvValidity={setEnvValid}
+          onSubmit={submit}
+          onCancel={undefined}
         />
-        <input
-          value={command}
-          onChange={(event) => setCommand(event.target.value)}
-          placeholder="command to run"
-          required
-        />
-        <button type="submit" className="btn">
-          Add
-        </button>
-      </form>
+      )}
+      {commands.length > 0 && (
+        <div className="command-hint">
+          Stored on the server; a session snapshots its command and environment when it
+          starts.
+        </div>
+      )}
     </div>
+  );
+}
+
+function envTitle(env: Command["env"]): string {
+  const summary = envSummary(env);
+  return summary.length > 0 ? `\n${summary}` : "";
+}
+
+function CommandForm({
+  name,
+  command,
+  env,
+  envValid,
+  error,
+  busy,
+  submitLabel,
+  onName,
+  onCommand,
+  onEnv,
+  onEnvValidity,
+  onSubmit,
+  onCancel,
+}: {
+  name: string;
+  command: string;
+  env: EnvPair[];
+  envValid: boolean;
+  error: string | null;
+  busy: boolean;
+  submitLabel: string;
+  onName: (value: string) => void;
+  onCommand: (value: string) => void;
+  onEnv: (pairs: EnvPair[]) => void;
+  onEnvValidity: (valid: boolean) => void;
+  onSubmit: (event: React.FormEvent) => void;
+  onCancel: (() => void) | undefined;
+}) {
+  return (
+    <form className="command-add" onSubmit={onSubmit}>
+      <input
+        value={name}
+        onChange={(event) => onName(event.target.value)}
+        placeholder="name (optional)"
+        aria-label="Command name"
+      />
+      <input
+        value={command}
+        onChange={(event) => onCommand(event.target.value)}
+        placeholder="command to run"
+        aria-label="Command"
+        required
+      />
+      <div className="dialog-section">Environment</div>
+      <EnvEditor
+        pairs={env}
+        onChange={onEnv}
+        onValidityChange={onEnvValidity}
+        namePrefix="cmd-env"
+      />
+      {error && <div className="form-error">{error}</div>}
+      <div className="command-form-actions">
+        {onCancel && (
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+        )}
+        <button type="submit" className="btn" disabled={busy || !envValid}>
+          {submitLabel}
+        </button>
+      </div>
+    </form>
   );
 }

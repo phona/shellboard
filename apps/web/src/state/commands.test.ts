@@ -1,59 +1,69 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import type { Command } from "@shellboard/contracts";
+import {
+  LOCAL_COMMANDS_KEY,
+  discardLocalPresets,
+  planMigration,
+  readLocalPresets,
+} from "./commandsMigration";
 
-/** zustand v5's persist defaults to window.localStorage; see store.test.ts for
-    why both the bare global and window have to exist. */
-const persisted = new Map<string, string>();
-const storage = {
-  getItem: (key: string) => persisted.get(key) ?? null,
-  setItem: (key: string, value: string) => void persisted.set(key, value),
-  removeItem: (key: string) => void persisted.delete(key),
-  clear: () => persisted.clear(),
-  key: (index: number) => [...persisted.keys()][index] ?? null,
-  get length() {
-    return persisted.size;
-  },
-};
-(globalThis as Record<string, unknown>).localStorage = storage;
-(globalThis as Record<string, unknown>).window = { localStorage: storage };
+function command(name: string): Command {
+  return { id: `c_${name}`, name, command: "echo hi", env: {}, createdAt: "now" };
+}
 
-const { useCommands } = await import("./commands");
-const commands = () => useCommands.getState().commands;
+describe("localStorage migration", () => {
+  const stored = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => void stored.set(key, value),
+    removeItem: (key: string) => void stored.delete(key),
+    clear: () => stored.clear(),
+    key: (index: number) => [...stored.keys()][index] ?? null,
+    length: 0,
+  };
 
-// The store is module scope, so every test starts from an empty preset list.
-beforeEach(() => {
-  useCommands.setState({ commands: [] });
-});
-
-describe("add", () => {
-  it("appends a preset", () => {
-    useCommands.getState().add("dev", "pnpm dev");
-    expect(commands()).toEqual([{ name: "dev", command: "pnpm dev" }]);
+  beforeEach(() => {
+    stored.clear();
   });
 
-  it("replaces a preset with the same name rather than duplicating it", () => {
-    useCommands.getState().add("dev", "pnpm dev");
-    useCommands.getState().add("dev", "pnpm dev --host");
-    expect(commands()).toEqual([{ name: "dev", command: "pnpm dev --host" }]);
+  it("reads the pre-D9 zustand-persisted shape", () => {
+    stored.set(
+      LOCAL_COMMANDS_KEY,
+      JSON.stringify([
+        { name: "dev", command: "pnpm dev" },
+        { name: "", command: "ignored" },
+        { command: "no name" },
+        "garbage",
+      ]),
+    );
+    expect(readLocalPresets(storage as unknown as Storage)).toEqual([
+      { name: "dev", command: "pnpm dev" },
+    ]);
   });
 
-  it("keeps distinct names apart", () => {
-    useCommands.getState().add("a", "1");
-    useCommands.getState().add("b", "2");
-    expect(commands().map((c) => c.name)).toEqual(["a", "b"]);
-  });
-});
-
-describe("remove", () => {
-  it("drops only the named preset", () => {
-    useCommands.getState().add("a", "1");
-    useCommands.getState().add("b", "2");
-    useCommands.getState().remove("a");
-    expect(commands().map((c) => c.name)).toEqual(["b"]);
+  it("reads nothing from absent or corrupt storage", () => {
+    expect(readLocalPresets(storage as unknown as Storage)).toEqual([]);
+    stored.set(LOCAL_COMMANDS_KEY, "{not json");
+    expect(readLocalPresets(storage as unknown as Storage)).toEqual([]);
+    stored.set(LOCAL_COMMANDS_KEY, JSON.stringify({ name: "dev" }));
+    expect(readLocalPresets(storage as unknown as Storage)).toEqual([]);
   });
 
-  it("is a no-op for an unknown name", () => {
-    useCommands.getState().add("a", "1");
-    useCommands.getState().remove("zzz");
-    expect(commands()).toHaveLength(1);
+  it("skips names the server already has", () => {
+    const remote = [command("dev")];
+    expect(planMigration(remote, [{ name: "dev", command: "pnpm dev" }])).toEqual([]);
+    expect(
+      planMigration(remote, [
+        { name: "dev", command: "pnpm dev" },
+        { name: "test", command: "pnpm test" },
+      ]),
+    ).toEqual([{ name: "test", command: "pnpm test" }]);
+  });
+
+  it("clears the local copy and arms the guard", () => {
+    stored.set(LOCAL_COMMANDS_KEY, JSON.stringify([{ name: "dev", command: "pnpm dev" }]));
+    discardLocalPresets(storage as unknown as Storage);
+    expect(stored.has(LOCAL_COMMANDS_KEY)).toBe(false);
+    expect(stored.get("shellboard.commands.migrated")).toBe("1");
   });
 });

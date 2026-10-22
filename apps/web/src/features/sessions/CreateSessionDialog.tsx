@@ -4,7 +4,9 @@ import { AGENT_PRESETS } from "@shellboard/contracts";
 import type { AgentType, Project } from "@shellboard/contracts";
 import { ApiError, api } from "../../api/client";
 import { Modal } from "../../components/Modal";
-import { useCommands } from "../../state/commands";
+import { EnvEditor } from "../../components/EnvEditor";
+import { useCommands } from "../../state/useCommands";
+import { pairsToRecord, recordToPairs, type EnvPair } from "../../state/env";
 import { useUi } from "../../state/store";
 import { codename } from "../../util/codename";
 
@@ -17,11 +19,20 @@ export function CreateSessionDialog({
 }) {
   const queryClient = useQueryClient();
   const sessionsQuery = useQuery({ queryKey: ["sessions"], queryFn: api.sessions.list });
-  const registeredCommands = useCommands((state) => state.commands);
+  const commandsQuery = useCommands();
+  const registeredCommands = commandsQuery.data ?? [];
   const [name, setName] = useState("");
   const [agentType, setAgentType] = useState<AgentType>("codex");
   const [cwd, setCwd] = useState("");
   const [command, setCommand] = useState("");
+  /** Launch environment (D9): set by picking a registered command, editable
+      for any agent type — "Claude Code with ANTHROPIC_MODEL=sonnet" does not
+      need a preset. */
+  const [env, setEnv] = useState<EnvPair[]>([]);
+  /** The env editor reports its own validity: a bulk line that is not an
+      assignment cannot round-trip through pairs, so launching stays off until
+      the text parses. */
+  const [envValid, setEnvValid] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -50,6 +61,7 @@ export function CreateSessionDialog({
         cwd: cwd || undefined,
         agentType,
         command: agentType === "custom" ? command : undefined,
+        env: pairsToRecord(env),
       });
       await queryClient.invalidateQueries({ queryKey: ["sessions"] });
       useUi.getState().selectSession(created.session.id);
@@ -81,16 +93,17 @@ export function CreateSessionDialog({
             <div className="preset-grid">
               {registeredCommands.map((item) => (
                 <div
-                  key={item.name}
+                  key={item.id}
                   className={
                     agentType === "custom" && command === item.command
                       ? "preset selected"
                       : "preset"
                   }
-                  title={item.command}
+                  title={envTitle(item)}
                   onClick={() => {
                     setAgentType("custom");
                     setCommand(item.command);
+                    setEnv(recordToPairs(item.env));
                   }}
                 >
                   {item.name}
@@ -125,6 +138,15 @@ export function CreateSessionDialog({
             />
           </label>
         )}
+        <details className="dialog-env">
+          <summary>Environment</summary>
+          <EnvEditor
+            pairs={env}
+            onChange={setEnv}
+            onValidityChange={setEnvValid}
+            namePrefix="session-env"
+          />
+        </details>
         {error && <div className="form-error">{error}</div>}
         <div className="modal-actions">
           <button type="button" onClick={onClose}>
@@ -133,7 +155,7 @@ export function CreateSessionDialog({
           <button
             type="submit"
             className="btn primary"
-            disabled={busy || (agentType === "custom" && !command)}
+            disabled={busy || (agentType === "custom" && !command) || !envValid}
           >
             Start session
           </button>
@@ -141,4 +163,14 @@ export function CreateSessionDialog({
       </form>
     </Modal>
   );
+}
+
+/** Hover text for a registered-command preset: the launch line plus, when the
+    preset carries one, its environment. */
+function envTitle(item: { command: string; env: Record<string, string> }): string {
+  const summary = Object.keys(item.env)
+    .sort()
+    .map((key) => `${key}=${item.env[key]}`)
+    .join(", ");
+  return summary.length > 0 ? `${item.command}\n${summary}` : item.command;
 }
